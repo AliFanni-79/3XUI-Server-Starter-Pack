@@ -8,8 +8,15 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
 
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
 if [[ $EUID -ne 0 ]]; then
-   echo "Error: Must be run as root."
+   echo -e "${RED}Error: Must be run as root.${NC}"
    exit 1
 fi
 
@@ -145,7 +152,20 @@ systemctl enable --now nginx
 systemctl reload nginx
 
 echo ""
-echo "=========================================================="
-echo "    Standalone Nginx Gateway Synchronization Enabled!     "
-echo "  Run 'xui-sync status' to verify all active endpoints.   "
-echo "=========================================================="
+echo -e "${GREEN}==========================================================${NC}"
+echo -e "${GREEN}    Standalone Nginx Gateway Synchronization Enabled!     ${NC}"
+echo -e "${GREEN}  Run 'xui-sync status' to verify all active endpoints.   ${NC}"
+echo -e "${GREEN}==========================================================${NC}"
+echo ""
+
+read -rp "Would you like to support this project and star it on GitHub? (y/N): " STAR_CHOICE
+if [[ "$STAR_CHOICE" =~ ^[Yy]$ ]]; then
+    GITHUB_URL="https://github.com/AliFanni-79/3XUI-Server-Starter-Pack"
+    echo ""
+    echo -e "${YELLOW}⭐ Thank you so much for your support!${NC}"
+    echo -e "👉 Opening ${CYAN}${GITHUB_URL}${NC} ..."
+    python3 -m webbrowser "$GITHUB_URL" >/dev/null 2>&1 || xdg-open "$GITHUB_URL" >/dev/null 2>&1 || sensible-browser "$GITHUB_URL" >/dev/null 2>&1 || true
+    echo -e "If the browser did not open automatically, visit:"
+    echo -e "   \e]8;;${GITHUB_URL}\e\\${CYAN}${GITHUB_URL}\e]8;;\e\\"
+    echo ""
+fi

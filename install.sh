@@ -183,3 +183,16 @@ echo " - Stealth Root (/)   : https://${DOMAIN}/ (Closes connection instantly wi
 echo ""
 echo "CLI Management Tool   : xui-sync (Run 'xui-sync help' for options)"
 echo "=========================================================="
+echo ""
+
+read -rp "Would you like to support this project and star it on GitHub? (y/N): " STAR_CHOICE
+if [[ "$STAR_CHOICE" =~ ^[Yy]$ ]]; then
+    GITHUB_URL="https://github.com/AliFanni-79/3XUI-Server-Starter-Pack"
+    echo ""
+    echo -e "${YELLOW}⭐ Thank you so much for your support!${NC}"
+    echo -e "👉 Opening ${CYAN}${GITHUB_URL}${NC} ..."
+    python3 -m webbrowser "$GITHUB_URL" >/dev/null 2>&1 || xdg-open "$GITHUB_URL" >/dev/null 2>&1 || sensible-browser "$GITHUB_URL" >/dev/null 2>&1 || true
+    echo -e "If the browser did not open automatically, visit:"
+    echo -e "   \e]8;;${GITHUB_URL}\e\\${CYAN}${GITHUB_URL}\e]8;;\e\\"
+    echo ""
+fi
