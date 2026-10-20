@@ -97,7 +97,7 @@ fi
 
 # Resolve Nginx Conflicts & Pre-checks
 if [[ -f "$SCRIPT_DIR/core/nginx_manager.sh" ]]; then
-    bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT"
+    bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT" "$BOT_PUBLIC_PORT"
 fi
 
 # Configure SQLite WAL & 3X-UI settings

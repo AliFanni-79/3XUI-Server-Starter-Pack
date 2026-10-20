@@ -118,7 +118,7 @@ fi
 
 # 4. Resolve Preconfigured Nginx Conflicts & Pre-checks
 chmod +x "$SCRIPT_DIR/core/nginx_manager.sh"
-bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT"
+bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT" "$BOT_PUBLIC_PORT"
 
 # 5. Install / Verify 3X-UI Panel
 chmod +x "$SCRIPT_DIR/core/xui_manager.sh"

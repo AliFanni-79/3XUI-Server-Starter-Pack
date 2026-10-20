@@ -321,12 +321,34 @@ def backup_file(filepath, backup_dir):
     except Exception:
         return None
 
-def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=2096, config_json_path="/etc/x-ui/nginx_proxy.json"):
-    """Main orchestrator for conflict inspection, resolution, and completion mode."""
+def get_listening_sockets():
+    """Detect all ports actively bound on the operating system."""
+    occupied = {}
+    try:
+        import subprocess
+        cmd = ["ss", "-tulpn"]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines()[1:]:
+                parts = line.split()
+                if len(parts) >= 5:
+                    addr = parts[4]
+                    m = re.search(r':(\d+)$', addr)
+                    if m:
+                        p = int(m.group(1))
+                        proc = parts[6] if len(parts) >= 7 else "system process"
+                        occupied[p] = proc
+    except Exception:
+        pass
+    return occupied
+
+def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=2096, bot_port=8443, config_json_path="/etc/x-ui/nginx_proxy.json"):
+    """Main orchestrator: checks EVERY port & path across inbounds, panel, sub, and bot."""
     domain = domain.strip().lower()
     inbounds_port = int(inbounds_port)
     panel_port = int(panel_port)
     sub_port = int(sub_port)
+    bot_port = int(bot_port)
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir = f"/etc/nginx/backup_{timestamp}"
@@ -351,19 +373,43 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
     proxy_config["inbounds_port"] = inbounds_port
     proxy_config["panel_public_port"] = panel_port
     proxy_config["sub_public_port"] = sub_port
+    proxy_config["bot_public_port"] = bot_port
+
+    # 1. System Socket Level Port Check (Detect non-Nginx/non-XUI services on required ports)
+    sockets = get_listening_sockets()
+    system_ports_to_verify = [
+        (inbounds_port, "Gateway Inbounds Public Port"),
+        (panel_port, "3X-UI Web Panel Public Port"),
+        (sub_port, "Subscription Public Port"),
+        (bot_port, "Telegram Bot WebUI Port"),
+        (20830, "3X-UI Panel Internal Loopback Port"),
+        (20960, "Subscription Internal Loopback Port"),
+        (8080, "Telegram Bot Local Port")
+    ]
+    if xui_data and xui_data.get("inbounds"):
+        for ib in xui_data["inbounds"]:
+            system_ports_to_verify.append((ib["port"], f"Inbound #{ib['id']} Port"))
+
+    for p, desc in system_ports_to_verify:
+        if p in sockets:
+            proc_str = sockets[p]
+            # Ignore if occupied by nginx or x-ui or python3
+            if not any(known in proc_str.lower() for known in ["nginx", "x-ui", "python"]):
+                print(f"{YELLOW}[WARNING] Port {p} ({desc}) is already in use by: {proc_str}{NC}")
 
     if not found_files:
         print(f"{GREEN}[+] No existing Nginx configuration files found. Clean setup.{NC}")
         proxy_config.setdefault("root_location_rule", "return 444;")
         proxy_config.setdefault("skip_panel_proxy", False)
         proxy_config.setdefault("skip_sub_proxy", False)
+        proxy_config.setdefault("skip_bot_proxy", False)
         proxy_config.setdefault("skip_inbound_ids", [])
         save_json(config_json_path, proxy_config)
         return 0
 
     integration = detect_integration(domain, servers, xui_data) if xui_data else None
 
-    # --- Scenario 1: Pre-Configured Panel + Nginx Detected ---
+    # --- Mode 1: Pre-Configured Panel + Nginx Detected ---
     if integration and (integration["panel_proxied"] or integration["routed_inbound_ids"]):
         print(f"\n{GREEN}[+] Detected existing 3X-UI & Nginx integration for {domain}:{NC}")
         if integration["panel_proxied"]:
@@ -395,7 +441,7 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
 
         print(f"\n{BLUE}How would you like to proceed?{NC}")
         print("  1) Update & Complete Only (Keeps all working panel & inbounds untouched; only routes missing items)")
-        print("  2) Interactive Conflict Resolver (Review domain, port, and path conflicts rule-by-rule)")
+        print("  2) Exhaustive Conflict Resolver (Check EVERY port and path rule-by-rule)")
         print("  3) Overwrite All (Backup existing configs to /etc/nginx/backup and replace with fresh gateway)")
         choice = input(f"Select option [1-3, default: 1]: ").strip() or "1"
 
@@ -403,9 +449,9 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
             print(f"{GREEN}[+] Running in Update & Completion Mode.{NC}")
             proxy_config["skip_panel_proxy"] = bool(integration["panel_proxied"])
             proxy_config["skip_sub_proxy"] = bool(integration["sub_proxied"])
+            proxy_config["skip_bot_proxy"] = False
             proxy_config["skip_inbound_ids"] = integration["routed_inbound_ids"]
 
-            # Preserve root rule if website was already configured
             if integration["existing_root"]:
                 proxy_config["root_location_rule"] = integration["existing_root"]["raw"]
                 print(f"{GREEN}[+] Preserved existing website root (/) from {integration['existing_root']['file']}.{NC}")
@@ -422,103 +468,185 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
             proxy_config["root_location_rule"] = "return 444;"
             proxy_config["skip_panel_proxy"] = False
             proxy_config["skip_sub_proxy"] = False
+            proxy_config["skip_bot_proxy"] = False
             proxy_config["skip_inbound_ids"] = []
             save_json(config_json_path, proxy_config)
             print(f"{GREEN}[+] Overwrite complete. Fresh gateway initialized.{NC}")
             return 0
 
-    # --- Scenario 2: Granular Rule-by-Rule Conflict Resolver ---
-    print(f"\n{YELLOW}--- Granular Rule-by-Rule Conflict Resolver ---{NC}")
+    # --- Mode 2: Exhaustive Port & Path Conflict Resolver ---
+    print(f"\n{YELLOW}--- Checking EVERY Port and Path for Conflicts ---{NC}")
 
-    # Check Conflict on (domain, inbounds_port (443), "/")
+    # Build full inventory of all endpoints to check
+    endpoints_to_check = []
+
+    # 1. Root on Inbounds Port
+    endpoints_to_check.append({
+        "port": inbounds_port,
+        "path": "/",
+        "component": "Gateway Root (/)",
+        "type": "root",
+        "planned": "return 444; (Stealth Drop) or website",
+        "ib_id": None
+    })
+
+    # 2. Every Inbound Path from 3X-UI
+    if xui_data and xui_data.get("inbounds"):
+        for ib in xui_data["inbounds"]:
+            ib_p = ib["path"]
+            if not ib_p:
+                ib_p = f"/{ib['protocol']}-{ib['network']}-{ib['id']}"
+            elif not ib_p.startswith("/"):
+                ib_p = "/" + ib_p
+            endpoints_to_check.append({
+                "port": inbounds_port,
+                "path": ib_p,
+                "component": f"Inbound #{ib['id']} ({ib['remark']} - {ib['protocol']}/{ib['network']})",
+                "type": "inbound",
+                "planned": f"proxy_pass to 127.0.0.1:{ib['port']}",
+                "ib_id": ib["id"]
+            })
+
+    # 3. 3X-UI Web Panel Port & Paths
+    panel_base = xui_data["settings"].get("webBasePath", "").strip() if xui_data else ""
+    endpoints_to_check.append({
+        "port": panel_port,
+        "path": "/",
+        "component": "3X-UI Web Panel Root",
+        "type": "panel",
+        "planned": "proxy_pass to 127.0.0.1:20830",
+        "ib_id": None
+    })
+    if panel_base and panel_base != "/":
+        if not panel_base.startswith("/"): panel_base = "/" + panel_base
+        endpoints_to_check.append({
+            "port": panel_port,
+            "path": panel_base,
+            "component": f"3X-UI Web Panel Secret Base Path ({panel_base})",
+            "type": "panel",
+            "planned": "proxy_pass to 127.0.0.1:20830",
+            "ib_id": None
+        })
+
+    # 4. Subscription Port & Paths
+    sub_path = xui_data["settings"].get("subPath", "/sub/").strip() if xui_data else "/sub/"
+    endpoints_to_check.append({
+        "port": sub_port,
+        "path": "/",
+        "component": "Subscription Service Root",
+        "type": "sub",
+        "planned": "proxy_pass to 127.0.0.1:20960",
+        "ib_id": None
+    })
+    if sub_path and sub_path != "/":
+        if not sub_path.startswith("/"): sub_path = "/" + sub_path
+        endpoints_to_check.append({
+            "port": sub_port,
+            "path": sub_path,
+            "component": f"Subscription Service Path ({sub_path})",
+            "type": "sub",
+            "planned": "proxy_pass to 127.0.0.1:20960",
+            "ib_id": None
+        })
+
+    # 5. Telegram Bot Port & Path
+    endpoints_to_check.append({
+        "port": bot_port,
+        "path": "/",
+        "component": "Telegram Shop-Bot WebUI Root",
+        "type": "bot",
+        "planned": "proxy_pass to 127.0.0.1:8080",
+        "ib_id": None
+    })
+
     root_rule = "return 444;"
-    conflicting_443 = []
-    for s in servers:
-        matches_domain = domain in s["server_names"] or "_" in s["server_names"]
-        if inbounds_port in s["ports"] and matches_domain:
-            conflicting_443.append(s)
+    skip_panel = False
+    skip_sub = False
+    skip_bot = False
+    skip_inbound_ids = []
+    handled_files = set()
 
-    if conflicting_443:
-        for s in conflicting_443:
-            loc_root = s["locations"].get("/", None)
-            if loc_root and "return 444" not in loc_root["raw"]:
-                print(f"\n{YELLOW}[!] Conflict detected on Domain '{domain}', Port {inbounds_port}, Path '/':{NC}")
-                print(f"    File: {s['file']}")
-                print(f"    Current rule in file:")
-                for r_line in loc_root["raw"].splitlines():
-                    print(f"       {r_line}")
-                print(f"    Gateway default: return 444; (Stealth Drop)")
+    conflicts_detected = 0
 
-                print(f"\nHow would you like to handle this conflict?")
-                print(f"  1) Keep existing rule (Preserve website at '/', attach VPN inbounds alongside it)")
-                print(f"  2) Replace with Gateway Stealth Drop (return 444;)")
-                ans = input("Select option [1-2, default: 1]: ").strip() or "1"
-                if ans == "1":
-                    root_rule = loc_root["raw"]
-                    print(f"{GREEN}[+] Preserving existing root rule.{NC}")
-                    # Disable conflicting old file so duplicate server_name warning doesn't trigger
-                    backup_file(s["file"], backup_dir)
-                    print(f"{BLUE}[*] Migrated existing site rule to gateway; archived {s['file']}.{NC}")
-                else:
-                    backup_file(s["file"], backup_dir)
-                    print(f"{YELLOW}[-] Replaced with Stealth Drop. Archived {s['file']}.{NC}")
+    for ep in endpoints_to_check:
+        ep_port = ep["port"]
+        ep_path = ep["path"]
+        ep_type = ep["type"]
+        ep_comp = ep["component"]
+        ep_planned = ep["planned"]
+
+        # Search for matching server & location in parsed Nginx configs
+        for s in servers:
+            matches_domain = domain in s["server_names"] or "_" in s["server_names"] or len(s["server_names"]) == 0
+            if ep_port in s["ports"] and matches_domain:
+                # Check location match
+                loc_match = None
+                for loc_p, loc_data in s["locations"].items():
+                    if loc_p == ep_path or (ep_path != "/" and ep_path in loc_p):
+                        loc_match = (loc_p, loc_data)
+                        break
+
+                # For panel, sub, or bot: even if location is not exact, the whole port block is a collision
+                if not loc_match and ep_type in ["panel", "sub", "bot"]:
+                    loc_match = ("/", {"raw": f"Server block listening on port {ep_port}"})
+
+                if loc_match:
+                    conflicts_detected += 1
+                    loc_key, loc_info = loc_match
+                    current_raw = loc_info["raw"].strip()
+
+                    # Skip if this is already just our stealth 444 drop
+                    if ep_type == "root" and "return 444" in current_raw:
+                        continue
+
+                    print(f"\n{YELLOW}[!] Conflict detected on https://{domain}:{ep_port}{ep_path}{NC}")
+                    print(f"    Target Component       : {CYAN}{ep_comp}{NC}")
+                    print(f"    Existing Configuration : File: {s['file']}")
+                    print(f"    Current Directive in file:")
+                    for r_line in current_raw.splitlines()[:5]:
+                        print(f"       {r_line}")
+                    if len(current_raw.splitlines()) > 5:
+                        print("       ...")
+                    print(f"    Planned Gateway Rule   : {ep_planned}")
+
+                    print(f"\nHow would you like to handle this conflict?")
+                    print(f"  1) Keep existing rule (Leave {s['file']} rule untouched)")
+                    print(f"  2) Replace with Gateway rule (Archive {s['file']} and overwrite)")
+                    ans = input("Select option [1-2, default: 1]: ").strip() or "1"
+
+                    if ans == "1":
+                        print(f"{GREEN}[+] Keeping existing rule for {ep_comp}.{NC}")
+                        if ep_type == "root":
+                            root_rule = current_raw
+                            backup_file(s["file"], backup_dir)
+                            print(f"{BLUE}[*] Migrated root website rule into gateway; archived original file to avoid duplicate server_name.{NC}")
+                        elif ep_type == "panel":
+                            skip_panel = True
+                        elif ep_type == "sub":
+                            skip_sub = True
+                        elif ep_type == "bot":
+                            skip_bot = True
+                        elif ep_type == "inbound":
+                            if ep["ib_id"] is not None:
+                                skip_inbound_ids.append(ep["ib_id"])
+                    else:
+                        print(f"{YELLOW}[-] Replacing with Gateway rule.{NC}")
+                        if s["file"] not in handled_files:
+                            backup_file(s["file"], backup_dir)
+                            handled_files.add(s["file"])
+                            print(f"{BLUE}[*] Archived {s['file']} to {backup_dir}.{NC}")
+
+    if conflicts_detected == 0:
+        print(f"{GREEN}[+] No port or path conflicts detected across panel, sub, inbounds, or bot.{NC}")
 
     proxy_config["root_location_rule"] = root_rule
-
-    # Check Conflict on (domain, panel_port (2083), panel_path)
-    skip_panel = False
-    conflicting_panel = []
-    for s in servers:
-        matches_domain = domain in s["server_names"] or "_" in s["server_names"]
-        if panel_port in s["ports"] and matches_domain:
-            conflicting_panel.append(s)
-
-    if conflicting_panel:
-        for s in conflicting_panel:
-            print(f"\n{YELLOW}[!] Conflict detected on Domain '{domain}', Port {panel_port} (3X-UI Web Panel):{NC}")
-            print(f"    File: {s['file']}")
-            print(f"    Existing server configuration found.")
-            print(f"How would you like to handle this conflict?")
-            print(f"  1) Keep existing panel config (Leave {s['file']} untouched, do not overwrite)")
-            print(f"  2) Replace with Gateway Panel direct SSL proxy")
-            ans = input("Select option [1-2, default: 1]: ").strip() or "1"
-            if ans == "1":
-                skip_panel = True
-                print(f"{GREEN}[+] Kept existing panel configuration.{NC}")
-            else:
-                backup_file(s["file"], backup_dir)
-                print(f"{YELLOW}[-] Replaced with Gateway panel proxy. Archived {s['file']}.{NC}")
-
     proxy_config["skip_panel_proxy"] = skip_panel
-
-    # Check Conflict on (domain, sub_port (2096))
-    skip_sub = False
-    conflicting_sub = []
-    for s in servers:
-        matches_domain = domain in s["server_names"] or "_" in s["server_names"]
-        if sub_port in s["ports"] and matches_domain:
-            conflicting_sub.append(s)
-
-    if conflicting_sub:
-        for s in conflicting_sub:
-            print(f"\n{YELLOW}[!] Conflict detected on Domain '{domain}', Port {sub_port} (Subscriptions):{NC}")
-            print(f"    File: {s['file']}")
-            print(f"How would you like to handle this conflict?")
-            print(f"  1) Keep existing subscription config (Leave {s['file']} untouched)")
-            print(f"  2) Replace with Gateway subscription proxy")
-            ans = input("Select option [1-2, default: 1]: ").strip() or "1"
-            if ans == "1":
-                skip_sub = True
-                print(f"{GREEN}[+] Kept existing subscription configuration.{NC}")
-            else:
-                backup_file(s["file"], backup_dir)
-                print(f"{YELLOW}[-] Replaced with Gateway subscription proxy. Archived {s['file']}.{NC}")
-
     proxy_config["skip_sub_proxy"] = skip_sub
-    proxy_config.setdefault("skip_inbound_ids", [])
+    proxy_config["skip_bot_proxy"] = skip_bot
+    proxy_config["skip_inbound_ids"] = list(set(skip_inbound_ids))
 
     save_json(config_json_path, proxy_config)
-    print(f"\n{GREEN}[+] All conflicts inspected and resolved successfully.{NC}")
+    print(f"\n{GREEN}[+] All ports and paths verified and saved successfully.{NC}")
     return 0
 
 def save_json(path, data):
@@ -532,4 +660,5 @@ if __name__ == "__main__":
     in_port = sys.argv[2] if len(sys.argv) > 2 else 443
     pan_port = sys.argv[3] if len(sys.argv) > 3 else 2083
     sub_port_arg = sys.argv[4] if len(sys.argv) > 4 else 2096
-    inspect_and_resolve(domain_arg, in_port, pan_port, sub_port_arg)
+    bot_port_arg = sys.argv[5] if len(sys.argv) > 5 else 8443
+    inspect_and_resolve(domain_arg, in_port, pan_port, sub_port_arg, bot_port_arg)

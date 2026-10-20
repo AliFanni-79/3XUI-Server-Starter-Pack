@@ -347,6 +347,7 @@ def generate_nginx_config(conf, inbounds, panel_port, panel_proto, web_base_path
     root_rule = conf.get("root_location_rule", "return 444;").strip()
     skip_panel = conf.get("skip_panel_proxy", False)
     skip_sub = conf.get("skip_sub_proxy", False)
+    skip_bot = conf.get("skip_bot_proxy", False)
     skip_inbound_ids = set(conf.get("skip_inbound_ids", []))
 
     lines = [
@@ -500,30 +501,31 @@ def generate_nginx_config(conf, inbounds, panel_port, panel_proto, web_base_path
         ])
 
     # Telegram Bot WebUI on Port 8443
-    lines.extend([
-        f"# Telegram Bot WebUI on Port {bot_public}",
-        "server {",
-        f"    listen {bot_public} ssl;",
-        f"    listen [::]:{bot_public} ssl;",
-        "    http2 on;",
-        f"    server_name {domain};",
-        f"    ssl_certificate {ssl_cert};",
-        f"    ssl_certificate_key {ssl_key};",
-        "    client_max_body_size 16m;",
-        "",
-        "    location / {",
-        f"        proxy_pass http://127.0.0.1:{bot_internal};",
-        "        proxy_http_version 1.1;",
-        "        proxy_set_header Upgrade $http_upgrade;",
-        "        proxy_set_header Connection $connection_upgrade;",
-        "        proxy_set_header Host $host;",
-        "        proxy_set_header X-Real-IP $remote_addr;",
-        "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
-        "        proxy_read_timeout 86400s;",
-        "        proxy_send_timeout 86400s;",
-        "    }",
-        "}\n"
-    ])
+    if not skip_bot:
+        lines.extend([
+            f"# Telegram Bot WebUI on Port {bot_public}",
+            "server {",
+            f"    listen {bot_public} ssl;",
+            f"    listen [::]:{bot_public} ssl;",
+            "    http2 on;",
+            f"    server_name {domain};",
+            f"    ssl_certificate {ssl_cert};",
+            f"    ssl_certificate_key {ssl_key};",
+            "    client_max_body_size 16m;",
+            "",
+            "    location / {",
+            f"        proxy_pass http://127.0.0.1:{bot_internal};",
+            "        proxy_http_version 1.1;",
+            "        proxy_set_header Upgrade $http_upgrade;",
+            "        proxy_set_header Connection $connection_upgrade;",
+            "        proxy_set_header Host $host;",
+            "        proxy_set_header X-Real-IP $remote_addr;",
+            "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
+            "        proxy_read_timeout 86400s;",
+            "        proxy_send_timeout 86400s;",
+            "    }",
+            "}\n"
+        ])
 
     conf_content = "\n".join([line for line in lines if line is not None])
     conf_path = conf.get("nginx_conf_path", "/etc/nginx/conf.d/xui_proxy.conf")

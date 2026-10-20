@@ -14,6 +14,7 @@ inspect_and_resolve_nginx() {
     local INBOUND_PORT="${2:-443}"
     local PANEL_PORT="${3:-2083}"
     local SUB_PORT="${4:-2096}"
+    local BOT_PORT="${5:-8443}"
     local SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
 
     if ! command -v nginx >/dev/null 2>&1; then
@@ -23,7 +24,7 @@ inspect_and_resolve_nginx() {
 
     # Delegate to advanced Python inspector if available
     if command -v python3 >/dev/null 2>&1 && [[ -f "$SCRIPT_DIR/nginx_inspector.py" ]]; then
-        python3 "$SCRIPT_DIR/nginx_inspector.py" "$DOMAIN" "$INBOUND_PORT" "$PANEL_PORT" "$SUB_PORT"
+        python3 "$SCRIPT_DIR/nginx_inspector.py" "$DOMAIN" "$INBOUND_PORT" "$PANEL_PORT" "$SUB_PORT" "$BOT_PORT"
         return $?
     fi
 
