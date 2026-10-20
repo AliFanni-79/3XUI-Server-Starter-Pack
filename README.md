@@ -74,14 +74,23 @@ Multiplexes all inbound proxy connections onto a single public port (`443`), exp
 
 ### Option 1: Full Automated Installation (New or Existing Server)
 
-Installs dependencies, configures Nginx, verifies/installs 3X-UI, sets up the sync engine, and optionally installs 3XUI-Shop-Bot:
+Installs dependencies, configures Nginx, verifies/installs latest 3X-UI, sets up the sync engine, and optionally installs 3XUI-Shop-Bot:
+
+**One-Line Command:**
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/AliFanni-79/xui-nginx-gateway/master/install.sh)
+```
+
+<details>
+<summary>Manual Git Clone Alternative</summary>
 
 ```bash
-git clone https://github.com/yourusername/xui-nginx-gateway.git /root/xui-nginx-gateway
+git clone https://github.com/AliFanni-79/xui-nginx-gateway.git /root/xui-nginx-gateway
 cd /root/xui-nginx-gateway
 chmod +x install.sh
 ./install.sh
 ```
+</details>
 
 ---
 
@@ -89,12 +98,21 @@ chmod +x install.sh
 
 If you **already have 3X-UI and/or 3XUI-Shop-Bot running** and only want to install the Nginx gateway and automated synchronization without touching your existing services:
 
+**One-Line Command:**
 ```bash
-git clone https://github.com/yourusername/xui-nginx-gateway.git /root/xui-nginx-gateway
+bash <(curl -Ls https://raw.githubusercontent.com/AliFanni-79/xui-nginx-gateway/master/standalone-sync-setup.sh)
+```
+
+<details>
+<summary>Manual Git Clone Alternative</summary>
+
+```bash
+git clone https://github.com/AliFanni-79/xui-nginx-gateway.git /root/xui-nginx-gateway
 cd /root/xui-nginx-gateway
 chmod +x standalone-sync-setup.sh
 ./standalone-sync-setup.sh
 ```
+</details>
 
 ---
 

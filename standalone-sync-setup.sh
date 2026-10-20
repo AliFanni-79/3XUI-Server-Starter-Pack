@@ -6,11 +6,28 @@ set -e
 # For servers that ALREADY have 3X-UI and/or Shop-Bot installed
 # ==============================================================================
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
 
 if [[ $EUID -ne 0 ]]; then
    echo "Error: Must be run as root."
    exit 1
+fi
+
+REPO_URL="${XUI_GATEWAY_REPO:-https://github.com/AliFanni-79/xui-nginx-gateway.git}"
+TARGET_DIR="/root/xui-nginx-gateway"
+
+# Self-bootstrap if executed directly via curl / pipe
+if [[ ! -d "$SCRIPT_DIR/core" ]]; then
+    echo "[*] Bootstrapping XUI-Nginx-Gateway repository..."
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y git curl >/dev/null 2>&1 || true
+    rm -rf "$TARGET_DIR"
+    if ! git clone -q "$REPO_URL" "$TARGET_DIR"; then
+        echo "[-] Failed to clone repository from ${REPO_URL}"
+        echo "[!] If using a custom fork or branch, run: export XUI_GATEWAY_REPO=https://github.com/your/repo.git"
+        exit 1
+    fi
+    exec bash "$TARGET_DIR/standalone-sync-setup.sh" "$@"
 fi
 
 echo "=========================================================="

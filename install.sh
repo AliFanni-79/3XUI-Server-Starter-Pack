@@ -6,14 +6,35 @@ set -e
 # Integrates: MHSanaei 3X-UI + Nginx Path Gateway + ECH/REALITY + 3XUI-Shop-Bot
 # ==============================================================================
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+
+if [[ $EUID -ne 0 ]]; then
+   echo -e "${RED}Error: This installer must be run as root.${NC}"
+   exit 1
+fi
+
+REPO_URL="${XUI_GATEWAY_REPO:-https://github.com/AliFanni-79/xui-nginx-gateway.git}"
+TARGET_DIR="/root/xui-nginx-gateway"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+
+# Self-bootstrap if executed directly via curl / pipe
+if [[ ! -d "$SCRIPT_DIR/core" ]]; then
+    echo -e "${BLUE}[*] Bootstrapping XUI-Nginx-Gateway repository...${NC}"
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y git curl >/dev/null 2>&1 || true
+    rm -rf "$TARGET_DIR"
+    if ! git clone -q "$REPO_URL" "$TARGET_DIR"; then
+        echo -e "${RED}[-] Failed to clone repository from ${REPO_URL}${NC}"
+        echo -e "${YELLOW}[!] If using a custom fork or branch, run: export XUI_GATEWAY_REPO=https://github.com/your/repo.git${NC}"
+        exit 1
+    fi
+    exec bash "$TARGET_DIR/install.sh" "$@"
+fi
 
 echo -e "${CYAN}"
 echo "=========================================================="
@@ -26,11 +47,6 @@ echo "                        /____/                 "
 echo "        3X-UI + Nginx Gateway + Shop-Bot Setup "
 echo "=========================================================="
 echo -e "${NC}"
-
-if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}Error: This installer must be run as root.${NC}"
-   exit 1
-fi
 
 # 1. Install System Dependencies
 echo -e "${BLUE}[*] Updating package repositories & installing dependencies...${NC}"
