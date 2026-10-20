@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch 3X-UI Database For Inbound & Host Changes
+After=network.target
+
+[Path]
+PathModified=/etc/x-ui/x-ui.db
+Unit=xui-nginx-sync.service
+
+[Install]
+WantedBy=multi-user.target
