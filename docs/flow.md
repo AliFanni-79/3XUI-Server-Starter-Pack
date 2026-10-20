@@ -1,4 +1,4 @@
-Here is the complete end-to-end flow of the script logic, covering initialization, inspection, conflict resolution, synchronization, and the ongoing background runtime loop.
+# 3XUI-Server-Starter-Pack: Complete Flow & Architecture
 
 ---
 
@@ -8,8 +8,8 @@ Here is the complete end-to-end flow of the script logic, covering initializatio
 flowchart TD
     Start(["User runs bash <(curl -Ls .../install.sh)"]) --> CheckEnv{"Executed via curl pipe?"}
     
-    CheckEnv -- Yes (Missing ./core) --> Bootstrap["Self-Bootstrap:\nClone repo to /root/3XUI-Server-Starter-Pack\nexec bash install.sh"]
-    CheckEnv -- No (Local directory) --> RootCheck{"Is Root (EUID==0)?"}
+    CheckEnv -- "Yes (Missing ./core)" --> Bootstrap["Self-Bootstrap:\nClone repo to /root/3XUI-Server-Starter-Pack\nexec bash install.sh"]
+    CheckEnv -- "No (Local directory)" --> RootCheck{"Is Root (EUID==0)?"}
     Bootstrap --> RootCheck
     
     RootCheck -- No --> AbortFail["Abort: Must run as root"]
@@ -17,24 +17,27 @@ flowchart TD
     
     InstallDeps --> GatherConfig["Gather Network Config:\nDomain, SSL cert/Let's Encrypt,\nPublic Ports (443, 2083, 2096, 8443)"]
     
-    GatherConfig --> InspectNginx["core/nginx_inspector.py:\nScan /etc/nginx confs & /etc/x-ui/x-ui.db"]
+    GatherConfig --> InspectNginx["core/nginx_inspector.py:\n1. System Socket Audit (ss -tulpn)\n2. Scan /etc/nginx confs\n3. Read /etc/x-ui/x-ui.db\n4. Build Full Endpoint Inventory"]
     
     InspectNginx --> CheckPreConfig{"3X-UI + Nginx already\nintegrated together?"}
     
     CheckPreConfig -- "Yes (Panel / Inbounds found)" --> PromptMode{"User selects mode:"}
     PromptMode -- "1. Update / Complete" --> ModeComplete["Preserve working panel & inbounds;\nFlag missing inbounds & sub proxy for addition"]
-    PromptMode -- "2. Conflict Resolver" --> ModeRuleByRule["Review (Domain, Port, Path) rule-by-rule"]
+    PromptMode -- "2. Exhaustive Conflict Resolver" --> ModeRuleByRule["Check EVERY port & path in inventory"]
     PromptMode -- "3. Overwrite All" --> ModeOverwrite["Backup all to /etc/nginx/backup_<ts>/;\nFull clean replacement"]
     
-    CheckPreConfig -- "No (Fresh or Unrelated)" --> CheckConflicts{"Port / Domain\nConflicts Exist?"}
+    CheckPreConfig -- "No (Fresh or Unrelated)" --> CheckConflicts{"Port / Path\nConflicts Exist?"}
     CheckConflicts -- Yes --> ModeRuleByRule
     CheckConflicts -- No --> ModeClean["Default clean settings:\nStealth 444 at root (/)"]
     
-    ModeRuleByRule --> ResolveRoot["Conflict on (Domain, 443, '/'):\nKeep website at '/' OR Stealth 444?"]
-    ResolveRoot --> ResolvePanel["Conflict on (Domain, 2083, panel):\nKeep existing config OR Gateway proxy?"]
-    ResolvePanel --> ResolveSub["Conflict on (Domain, 2096, sub):\nKeep existing config OR Gateway proxy?"]
+    ModeRuleByRule --> LoopEndpoints["Loop through EVERY endpoint in inventory:\n- Gateway Root (443 /)\n- EVERY Inbound Path (443 /inbound-path)\n- Panel Port & Paths (2083 / and /base/)\n- Sub Port & Paths (2096 / and /sub/)\n- Bot Port & Path (8443 /)"]
     
-    ResolveSub --> SaveConfigJSON["Save decisions to /etc/x-ui/nginx_proxy.json:\n(root_location_rule, skip_panel, skip_sub, skip_inbound_ids)"]
+    LoopEndpoints --> DetectConflict{"Conflict on\n(Port, Path)?"}
+    DetectConflict -- Yes --> PromptUser["Prompt User specifically for this endpoint:\n1) Keep existing rule\n2) Replace with Gateway rule"]
+    DetectConflict -- No --> NextEndpoint["Next endpoint in inventory"]
+    PromptUser --> NextEndpoint
+    
+    NextEndpoint --> SaveConfigJSON["Save all decisions to /etc/x-ui/nginx_proxy.json:\n(root_location_rule, skip_panel, skip_sub, skip_bot, skip_inbound_ids)"]
     ModeComplete --> SaveConfigJSON
     ModeOverwrite --> SaveConfigJSON
     ModeClean --> SaveConfigJSON
@@ -55,99 +58,86 @@ flowchart TD
 
 ---
 
-### Step-by-Step Execution Stages
+### Complete Stage-by-Stage Breakdown
 
-#### 1. Self-Bootstrapping Stage (`install.sh` / `standalone-sync-setup.sh`)
-* **Problem Solved**: When a multi-file project is piped via `bash <(curl ...)`, bash runs in `/dev/fd/63`, losing access to relative directories (`./core/`).
-* **Logic**:
-  1. Checks if `$SCRIPT_DIR/core` exists.
-  2. If missing, it installs `git` and `curl`, clones `https://github.com/AliFanni-79/3XUI-Server-Starter-Pack.git` into `/root/3XUI-Server-Starter-Pack`, and hands off execution with `exec bash /root/3XUI-Server-Starter-Pack/install.sh "$@"`.
-  3. Interactive terminal input (`stdin`) remains intact.
+#### Stage 1: Self-Bootstrapping Entry (`install.sh` / `standalone-sync-setup.sh`)
+* Executes via `bash <(curl -Ls ...)` or local execution.
+* If executing via pipe where `$SCRIPT_DIR/core` is absent:
+  1. Installs `git` and `curl`.
+  2. Clones `https://github.com/AliFanni-79/3XUI-Server-Starter-Pack.git` into `/root/3XUI-Server-Starter-Pack`.
+  3. Hands off execution: `exec bash /root/3XUI-Server-Starter-Pack/install.sh "$@"`.
+  4. Keeps `stdin` connected to the terminal for interactive inputs.
 
----
+#### Stage 2: System Validation & Dependencies
+* Verifies `EUID == 0` (root privileges).
+* Installs dependencies: `nginx`, `python3`, `sqlite3`, `certbot`, `python3-certbot-nginx`, `curl`, `git`, `rsync`.
 
-#### 2. Network & SSL Setup
-* Asks for the public domain (e.g. `vpn.example.com`) and ports (default `443`, `2083`, `2096`, `8443`).
-* Checks for certificates in `/root/cert/${DOMAIN}` or `/etc/letsencrypt/live/${DOMAIN}`.
-* If no certificate is found, prompts to issue a free **Let's Encrypt certificate** via Certbot standalone.
+#### Stage 3: Network & SSL Configuration
+* Collects:
+  * Public Domain (e.g. `vpn.example.com`).
+  * Inbounds Gateway Public Port (default: `443`).
+  * 3X-UI Panel Public Port (default: `2083`).
+  * Subscription Public Port (default: `2096`).
+  * Telegram Bot WebUI Public Port (default: `8443`).
+* SSL Certificate Detection:
+  * Checks `/root/cert/${DOMAIN}/` and `/etc/letsencrypt/live/${DOMAIN}/`.
+  * If missing, prompts to issue a Let's Encrypt certificate automatically via Certbot.
 
----
+#### Stage 4: Comprehensive Conflict Inspection (`core/nginx_inspector.py`)
+1. **System Socket Audit**:
+   * Runs `ss -tulpn` on all public ports (`443`, `2083`, `2096`, `8443`), internal loopback ports (`20830`, `20960`, `8080`), and all internal inbound ports (`10001+`).
+   * Warns immediately if an external service (Apache, Caddy, Docker) is bound to any required port.
+2. **Builds the Complete Endpoint Inventory**:
+   * Gateway Inbounds Port:
+     * Path `/` (Root Website vs Stealth Drop)
+     * Path for **EVERY SINGLE INBOUND** in 3X-UI (`/vless-ws-1`, `/vless-xhttp-2`, `/grpc-trojan`, etc.)
+   * 3X-UI Web Panel Port:
+     * Path `/`
+     * Secret `webBasePath` (e.g. `/my-secret-panel/`)
+   * Subscription Port:
+     * Path `/`
+     * Path `subPath` (e.g. `/sub/` or `/api/`)
+   * Telegram Bot Port:
+     * Path `/`
+3. **Pre-Configuration Check (Update / Completion Mode)**:
+   * If existing working routes are detected (e.g. panel already proxied, or certain inbounds already configured in Nginx):
+     * Offers **Update & Completion Mode**: preserves working rules, and ONLY routes missing inbounds and subscription proxy into Nginx.
+4. **Exhaustive Port & Path Conflict Resolution**:
+   * For every endpoint in the inventory, if a conflict is found in any `/etc/nginx/` file:
+     * Displays target endpoint, file location, existing directive, and planned gateway rule.
+     * Prompts: `1) Keep existing rule` or `2) Replace with Gateway rule`.
+     * If Keep: records `root_location_rule`, `skip_panel_proxy`, `skip_sub_proxy`, `skip_bot_proxy`, or adds to `skip_inbound_ids`.
+     * If Replace: moves conflicting file to `/etc/nginx/backup_<timestamp>/`.
+5. **Saves Decisions**: writes results to `/etc/x-ui/nginx_proxy.json`.
 
-#### 3. Pre-Configuration Inspection & Conflict Resolution (`core/nginx_inspector.py`)
-This is the core intelligence module:
-1. **Scans Existing Nginx Configs**: Parses every `.conf` file in `/etc/nginx/conf.d/` and `/etc/nginx/sites-enabled/` without breaking comments or strings.
-2. **Scans 3X-UI Database (`/etc/x-ui/x-ui.db`)**: Reads `settings` (`webPort`, `subPort`, `webBasePath`) and all inbounds.
-3. **Compares Integration State**:
-   * **Update & Completion Mode**: If it detects that your panel or some inbounds are already working in Nginx, it asks to run in **Completion Mode**. It records which inbounds and panel rules are already working (`skip_inbound_ids`, `skip_panel_proxy`) so they are **never touched or redone**, and only routes missing inbounds or subscriptions.
-   * **Rule-by-Rule Conflict Resolver**: If there is a clash on:
-     * `(domain, 443, "/")`: Shows your existing website rule (e.g. WordPress, HTML) and asks whether to **Keep your website** (routing VPN paths alongside it) or use **Stealth Drop (`444`)**.
-     * `(domain, 2083, panel)`: Lets you keep your existing panel config or replace it.
-     * `(domain, 2096, sub)`: Lets you keep your existing subscription config or replace it.
-4. **Saves Results**: Writes all decisions to `/etc/x-ui/nginx_proxy.json`.
+#### Stage 5: 3X-UI Panel Hardening (`core/xui_manager.sh`)
+* Installs latest MHSanaei 3X-UI if missing.
+* Enables SQLite WAL mode (`PRAGMA journal_mode=WAL;`).
+* Configures `subDomain` and `subPort` in the database for client subscription links.
+* Shifts internal ports (`20830`, `20960`) so public ports can bind with SSL.
+* Binds `webListen` and `subListen` to `127.0.0.1`.
 
----
+#### Stage 6: Optional 3XUI-Shop-Bot Setup (`core/bot_manager.sh`)
+* Prompts user (y/N) to install [AliFanni-79/3XUI-Shop-Bot](https://github.com/AliFanni-79/3XUI-Shop-Bot).
+* Runs official installer and creates `nginx_sync_hook.py`.
 
-#### 4. 3X-UI Hardening & Setup (`core/xui_manager.sh`)
-1. Checks if 3X-UI is installed; if missing, runs MHSanaei's official installer.
-2. **Enables SQLite WAL Mode (`PRAGMA journal_mode=WAL;`)**: Allows high-frequency traffic counter writes without database lock freezes.
-3. **Reverse Proxy Subscription Injection**: Sets `subDomain` and `subPort` in the 3X-UI database so all client subscription links generated by 3X-UI or bots output `https://yourdomain.com:2096/sub/...`.
-4. **Port Shifting**: Shifts internal panel and sub ports to `127.0.0.1:20830` and `127.0.0.1:20960` so Nginx can bind public ports `2083` and `2096` with SSL.
+#### Stage 7: Background Synchronization Engine Deployment (`core/sync_engine.py`)
+* Deploys `/usr/local/bin/xui-nginx-sync.py` and CLI utility `/usr/local/bin/xui-sync`.
+* Deploys systemd watcher: `xui-nginx-sync.path` + `xui-nginx-sync.service`.
+* Executes initial sync:
+  1. Debounce check (5 seconds).
+  2. Extracts and preserves ECH configs in `hosts.ech_config_list`.
+  3. Detects REALITY inbounds and generates `hosts.security = "reality"`.
+  4. Generates `/etc/nginx/conf.d/xui_proxy.conf` respecting all user conflict decisions:
+     * Kept website at `/` (or `return 444;`).
+     * `location ^~` for all non-skipped inbounds with `client_max_body_size 0;` and `proxy_request_buffering off;` (unbuffered streaming).
+     * Panel & sub direct proxy without 302 redirect leaks (omitted if user kept existing files).
+     * Bot WebUI on 8443 (omitted if user kept existing files).
+  5. Tests with `nginx -t` and executes `systemctl reload nginx`.
+  6. **Crucially: NEVER restarts `x-ui`**, preventing intermittent 502 connection drops.
 
----
-
-#### 5. Optional Bot Integration (`core/bot_manager.sh`)
-* Asks if the user wants to install [3XUI-Shop-Bot](https://github.com/AliFanni-79/3XUI-Shop-Bot).
-* If yes, clones and runs its official installer, and deploys `nginx_sync_hook.py`.
-
----
-
-### Ongoing Runtime Loop (Post-Installation)
-
-Once installed, the system operates completely autonomously in the background without human intervention:
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Admin as Admin / Bot
-    participant XUI as 3X-UI (/etc/x-ui/x-ui.db)
-    participant Path as systemd.path (Watcher)
-    participant Sync as core/sync_engine.py
-    participant Nginx as Nginx Service
-    actor Client as VPN / Web Client
-
-    Admin->>XUI: Adds or edits an inbound (e.g. /vless-xhttp-5)
-    XUI->>XUI: Commits changes to SQLite (WAL Mode)
-    Path->>Sync: File change triggers xui-nginx-sync.service
-    
-    Sync->>Sync: 5-second debounce check (prevents traffic loop fires)
-    Sync->>XUI: Extracts ECH & REALITY parameters to modern 'hosts' table
-    Sync->>XUI: Assigns unique path & loopback port (127.0.0.1)
-    
-    Sync->>Sync: Builds /etc/nginx/conf.d/xui_proxy.conf in memory
-    Sync->>Sync: Compares SHA-256 hash against existing file
-    
-    alt Config is identical (e.g. only traffic counters changed)
-        Sync-->>Path: Exit (No Nginx reload needed)
-    else Config has changed (new inbound added)
-        Sync->>Nginx: Writes new config & tests 'nginx -t'
-        Sync->>Nginx: 'systemctl reload nginx' (Zero downtime, NO x-ui restart!)
-    end
-    
-    Client->>Nginx: HTTPS request to /vless-xhttp-5
-    Nginx->>XUI: Priority route (^~) proxies to 127.0.0.1:10005 (Buffering OFF)
-    
-    Client->>Nginx: Probe to https://yourdomain.com/
-    alt Kept Website
-        Nginx-->>Client: Serves existing website HTML
-    else Stealth Mode
-        Nginx-->>Client: HTTP 444 (Drops TCP immediately, 0 bytes)
-    end
-```
-
----
-
-### Key Safeguards Guaranteed by This Flow
-1. **Zero 502 Downtime**: The sync script **never restarts `x-ui`** during background syncs.
-2. **Zero 302 Redirect Leaks**: Bare visits to `:2083/` or `:2096/` do not return 302 redirects revealing secret panel paths.
-3. **No Buffer Overflows on XHTTP**: `client_max_body_size 0;` and `proxy_request_buffering off;` allow unlimited streaming without RAM buildup.
-4. **Non-Destructive**: Existing websites and prior panel setups are never silently overwritten.
+#### Stage 8: Completion & GitHub Star Prompt
+* Displays active URLs for Gateway, Panel, Subscription, and Bot.
+* Prompts user (y/N) to star the project on GitHub:
+  * Opens browser automatically if desktop/graphical session is detected.
+  * Outputs clickable OSC 8 hyperlink and plain URL for remote SSH terminals.
