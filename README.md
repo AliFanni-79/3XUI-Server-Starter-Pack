@@ -27,11 +27,14 @@ Multiplexes all inbound proxy connections onto a single public port (`443`), exp
   - Bare requests to the panel (`:2083/`) or subscriptions (`:2096/`) will **never** issue an HTTP 302 redirect revealing your secret paths. Only users and clients that know the exact secret URL can access them.
 - **Subscription Reverse Proxy Integration**:
   - Automatically configures `subDomain`, `subPort`, and `subPath` in 3X-UI's database so all client subscription links output `https://yourdomain.com:2096/sub/...` with TLS enabled.
-- **Preconfigured Nginx Conflict Resolver**:
-  - If Nginx already has existing websites or configuration rules, the installer lets you choose:
-    - **Overwrite All**: Cleanly backups old configurations to `/etc/nginx/backup_<timestamp>` and establishes a fresh gateway.
-    - **Keep All**: Preserves all existing sites and checks for port collisions.
-    - **Keep Selected**: Reviews existing configuration files rule-by-rule with an interactive prompt.
+- **Pre-Configuration Detection & Update Mode**:
+  - Automatically checks if 3X-UI and Nginx were already configured together before running the script.
+  - If existing working routes are detected (e.g. panel already proxied, or certain inbounds already configured), offers **Update & Completion Mode** to only add missing inbounds and subscription proxies without touching or redoing working rules.
+- **Granular Rule-by-Rule Conflict Resolver**:
+  - Checks for exact `(domain, port, path)` conflicts before modifying anything:
+    - **Root Path (`/`)**: If a website (WordPress, static HTML, or web app) is already configured on port 443 for your domain, prompts whether to keep the website (routing VPN inbounds alongside it) or replace with Stealth Drop (`444`).
+    - **Panel (`:2083`) & Subscriptions (`:2096`)**: Detects existing reverse proxy rules and allows keeping them untouched.
+    - **Overwrite All**: Backs up old configurations to `/etc/nginx/backup_<timestamp>` and establishes a clean gateway.
 - **3XUI-Shop-Bot Integration**:
   - Optionally installs [AliFanni-79/3XUI-Shop-Bot](https://github.com/AliFanni-79/3XUI-Shop-Bot) via its official installer and creates an automated `xui-sync` hook.
 - **Lightweight `xui-sync` CLI**:
@@ -147,7 +150,8 @@ xui-sync log
 ├── standalone-sync-setup.sh    # Standalone gateway installer for existing servers
 ├── core/
 │   ├── sync_engine.py          # Unified Python sync engine (ECH, REALITY, Hosts, Inbounds, Nginx)
-│   ├── nginx_manager.sh        # Preconfigured Nginx conflict resolver (Keep all / selected / overwrite)
+│   ├── nginx_inspector.py      # Pre-configuration detector & granular (domain, port, path) resolver
+│   ├── nginx_manager.sh        # Nginx conflict resolver wrapper
 │   ├── xui_manager.sh          # Installs/verifies 3X-UI, sets WAL mode & subDomain reverse proxy
 │   └── bot_manager.sh          # Optional 3XUI-Shop-Bot installer & integration hook
 ├── bin/

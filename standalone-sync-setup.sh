@@ -95,9 +95,9 @@ else
     fi
 fi
 
-# Resolve Nginx Conflicts
+# Resolve Nginx Conflicts & Pre-checks
 if [[ -f "$SCRIPT_DIR/core/nginx_manager.sh" ]]; then
-    bash "$SCRIPT_DIR/core/nginx_manager.sh" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT"
+    bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT"
 fi
 
 # Configure SQLite WAL & 3X-UI settings
@@ -116,23 +116,38 @@ fi
 
 # Deploy Config & Scripts
 mkdir -p /etc/x-ui
-cat << EOF > /etc/x-ui/nginx_proxy.json
-{
-  "domain": "${DOMAIN}",
-  "ssl_cert": "${SSL_CERT}",
-  "ssl_key": "${SSL_KEY}",
-  "inbounds_port": ${INBOUNDS_PORT},
-  "panel_public_port": ${PANEL_PUBLIC_PORT},
-  "panel_internal_port": 20830,
-  "sub_public_port": ${SUB_PUBLIC_PORT},
-  "sub_internal_port": 20960,
-  "bot_public_port": ${BOT_PUBLIC_PORT},
-  "bot_internal_port": ${BOT_INTERNAL_PORT},
-  "sub_path": "${SUB_PATH}",
-  "db_path": "/etc/x-ui/x-ui.db",
-  "nginx_conf_path": "/etc/nginx/conf.d/xui_proxy.conf"
-}
-EOF
+python3 -c "
+import json, os
+path = '/etc/x-ui/nginx_proxy.json'
+data = {}
+if os.path.isfile(path):
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        pass
+data.update({
+    'domain': '${DOMAIN}',
+    'ssl_cert': '${SSL_CERT}',
+    'ssl_key': '${SSL_KEY}',
+    'inbounds_port': int('${INBOUNDS_PORT}'),
+    'panel_public_port': int('${PANEL_PUBLIC_PORT}'),
+    'panel_internal_port': 20830,
+    'sub_public_port': int('${SUB_PUBLIC_PORT}'),
+    'sub_internal_port': 20960,
+    'bot_public_port': int('${BOT_PUBLIC_PORT}'),
+    'bot_internal_port': int('${BOT_INTERNAL_PORT}'),
+    'sub_path': '${SUB_PATH}',
+    'db_path': '/etc/x-ui/x-ui.db',
+    'nginx_conf_path': '/etc/nginx/conf.d/xui_proxy.conf'
+})
+data.setdefault('root_location_rule', 'return 444;')
+data.setdefault('skip_panel_proxy', False)
+data.setdefault('skip_sub_proxy', False)
+data.setdefault('skip_inbound_ids', [])
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=2)
+"
 
 cp "$SCRIPT_DIR/core/sync_engine.py" /usr/local/bin/xui-nginx-sync.py
 chmod +x /usr/local/bin/xui-nginx-sync.py

@@ -3,26 +3,34 @@ set -e
 
 # ==============================================================================
 # Nginx Manager: Conflict Resolver & Inspector
-# Handles: Overwrite All, Keep All, and Keep Selected (Rule-by-rule)
+# Handles: Pre-configuration check, Update/Completion mode, and Granular Conflict Resolution
 # ==============================================================================
 
 BACKUP_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NGINX_BACKUP_DIR="/etc/nginx/backup_${BACKUP_TIMESTAMP}"
 
 inspect_and_resolve_nginx() {
-    local INBOUND_PORT="${1:-443}"
-    local PANEL_PORT="${2:-2083}"
-    local SUB_PORT="${3:-2096}"
+    local DOMAIN="${1:-localhost}"
+    local INBOUND_PORT="${2:-443}"
+    local PANEL_PORT="${3:-2083}"
+    local SUB_PORT="${4:-2096}"
+    local SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+
+    if ! command -v nginx >/dev/null 2>&1; then
+        echo "[*] Nginx is not installed yet. Will be installed freshly."
+        return 0
+    fi
+
+    # Delegate to advanced Python inspector if available
+    if command -v python3 >/dev/null 2>&1 && [[ -f "$SCRIPT_DIR/nginx_inspector.py" ]]; then
+        python3 "$SCRIPT_DIR/nginx_inspector.py" "$DOMAIN" "$INBOUND_PORT" "$PANEL_PORT" "$SUB_PORT"
+        return $?
+    fi
 
     echo ""
     echo "=========================================================="
     echo "         Nginx Configuration & Conflict Inspector         "
     echo "=========================================================="
-
-    if ! command -v nginx >/dev/null 2>&1; then
-        echo "[*] Nginx is not installed. Will be installed freshly."
-        return 0
-    fi
 
     local EXISTING_CONFIGS=()
     while IFS= read -r -d $'\0' file; do
