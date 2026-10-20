@@ -2,7 +2,7 @@
 set -e
 
 # ==============================================================================
-# XUI-Nginx-Gateway: Master Orchestrator & Installer
+# 3XUI-Server-Starter-Pack: Master Orchestrator & Installer
 # Integrates: MHSanaei 3X-UI + Nginx Path Gateway + ECH/REALITY + 3XUI-Shop-Bot
 # ==============================================================================
 
@@ -18,13 +18,13 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-REPO_URL="${XUI_GATEWAY_REPO:-https://github.com/AliFanni-79/xui-nginx-gateway.git}"
-TARGET_DIR="/root/xui-nginx-gateway"
+REPO_URL="${XUI_GATEWAY_REPO:-https://github.com/AliFanni-79/3XUI-Server-Starter-Pack.git}"
+TARGET_DIR="/root/3XUI-Server-Starter-Pack"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
 
 # Self-bootstrap if executed directly via curl / pipe
 if [[ ! -d "$SCRIPT_DIR/core" ]]; then
-    echo -e "${BLUE}[*] Bootstrapping XUI-Nginx-Gateway repository...${NC}"
+    echo -e "${BLUE}[*] Bootstrapping 3XUI-Server-Starter-Pack repository...${NC}"
     apt-get update -y >/dev/null 2>&1 || true
     apt-get install -y git curl >/dev/null 2>&1 || true
     rm -rf "$TARGET_DIR"
@@ -173,7 +173,7 @@ systemctl restart nginx
 
 echo ""
 echo -e "${GREEN}==========================================================${NC}"
-echo -e "${GREEN}       XUI-NGINX-GATEWAY INSTALLATION COMPLETED!          ${NC}"
+echo -e "${GREEN}     3XUI-SERVER-STARTER-PACK INSTALLATION COMPLETED!     ${NC}"
 echo -e "${GREEN}==========================================================${NC}"
 echo " - Inbounds Gateway   : https://${DOMAIN}:${INBOUNDS_PORT}/"
 echo " - 3X-UI Web Panel    : https://${DOMAIN}:${PANEL_PUBLIC_PORT}/ (Direct proxy, no leak)"

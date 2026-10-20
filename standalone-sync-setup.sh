@@ -2,7 +2,7 @@
 set -e
 
 # ==============================================================================
-# XUI-Nginx-Gateway: Standalone Sync Setup
+# 3XUI-Server-Starter-Pack: Standalone Sync Setup
 # For servers that ALREADY have 3X-UI and/or Shop-Bot installed
 # ==============================================================================
 
@@ -13,12 +13,12 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-REPO_URL="${XUI_GATEWAY_REPO:-https://github.com/AliFanni-79/xui-nginx-gateway.git}"
-TARGET_DIR="/root/xui-nginx-gateway"
+REPO_URL="${XUI_GATEWAY_REPO:-https://github.com/AliFanni-79/3XUI-Server-Starter-Pack.git}"
+TARGET_DIR="/root/3XUI-Server-Starter-Pack"
 
 # Self-bootstrap if executed directly via curl / pipe
 if [[ ! -d "$SCRIPT_DIR/core" ]]; then
-    echo "[*] Bootstrapping XUI-Nginx-Gateway repository..."
+    echo "[*] Bootstrapping 3XUI-Server-Starter-Pack repository..."
     apt-get update -y >/dev/null 2>&1 || true
     apt-get install -y git curl >/dev/null 2>&1 || true
     rm -rf "$TARGET_DIR"
@@ -31,7 +31,7 @@ if [[ ! -d "$SCRIPT_DIR/core" ]]; then
 fi
 
 echo "=========================================================="
-echo "    XUI-Nginx-Gateway: Standalone Sync Installation       "
+echo "  3XUI-Server-Starter-Pack: Standalone Sync Installation  "
 echo " (For servers with existing 3X-UI and/or Shop-Bot)       "
 echo "=========================================================="
 

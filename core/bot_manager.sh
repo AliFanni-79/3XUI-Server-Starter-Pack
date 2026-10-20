@@ -47,6 +47,7 @@ manage_shop_bot() {
     local HOOK_FILE="$BOT_DIR/nginx_sync_hook.py"
     cat << 'EOF' > "$HOOK_FILE"
 # Nginx Gateway Sync Hook for 3XUI-Shop-Bot
+import os
 import shutil
 import subprocess
 import sys
@@ -64,11 +65,10 @@ def trigger_gateway_sync():
     else:
         print("\n[Notice] xui-sync is not installed on this server.")
         print("To enable automatic Nginx port 443 path routing & TLS for your bot links,")
-        print("install the Nginx Gateway: https://github.com/yourusername/xui-nginx-gateway\n")
+        print("install the Nginx Gateway: https://github.com/AliFanni-79/3XUI-Server-Starter-Pack\n")
         return False
 
 if __name__ == "__main__":
-    import os
     trigger_gateway_sync()
 EOF
     chmod +x "$HOOK_FILE"

@@ -1,4 +1,4 @@
-# XUI-Nginx-Gateway
+# 3XUI-Server-Starter-Pack
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: Ubuntu](https://img.shields.io/badge/OS-Ubuntu%20%7C%20Debian-orange.svg)](#)
@@ -78,15 +78,15 @@ Installs dependencies, configures Nginx, verifies/installs latest 3X-UI, sets up
 
 **One-Line Command:**
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/AliFanni-79/xui-nginx-gateway/master/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/AliFanni-79/3XUI-Server-Starter-Pack/master/install.sh)
 ```
 
 <details>
 <summary>Manual Git Clone Alternative</summary>
 
 ```bash
-git clone https://github.com/AliFanni-79/xui-nginx-gateway.git /root/xui-nginx-gateway
-cd /root/xui-nginx-gateway
+git clone https://github.com/AliFanni-79/3XUI-Server-Starter-Pack.git /root/3XUI-Server-Starter-Pack
+cd /root/3XUI-Server-Starter-Pack
 chmod +x install.sh
 ./install.sh
 ```
@@ -100,15 +100,15 @@ If you **already have 3X-UI and/or 3XUI-Shop-Bot running** and only want to inst
 
 **One-Line Command:**
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/AliFanni-79/xui-nginx-gateway/master/standalone-sync-setup.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/AliFanni-79/3XUI-Server-Starter-Pack/master/standalone-sync-setup.sh)
 ```
 
 <details>
 <summary>Manual Git Clone Alternative</summary>
 
 ```bash
-git clone https://github.com/AliFanni-79/xui-nginx-gateway.git /root/xui-nginx-gateway
-cd /root/xui-nginx-gateway
+git clone https://github.com/AliFanni-79/3XUI-Server-Starter-Pack.git /root/3XUI-Server-Starter-Pack
+cd /root/3XUI-Server-Starter-Pack
 chmod +x standalone-sync-setup.sh
 ./standalone-sync-setup.sh
 ```
@@ -142,7 +142,7 @@ xui-sync log
 ## Repository Structure
 
 ```text
-xui-nginx-gateway/
+3XUI-Server-Starter-Pack/
 ├── install.sh                  # Interactive master installer & orchestrator
 ├── standalone-sync-setup.sh    # Standalone gateway installer for existing servers
 ├── core/
