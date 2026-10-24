@@ -9,6 +9,25 @@ set -e
 BACKUP_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 NGINX_BACKUP_DIR="/etc/nginx/backup_${BACKUP_TIMESTAMP}"
 
+prompt_read() {
+    local prompt_msg="$1"
+    local var_name="$2"
+    local default_val="$3"
+    local input_val=""
+
+    printf "%b" "$prompt_msg"
+    if [[ -e /dev/tty ]]; then
+        read -r input_val </dev/tty || true
+    else
+        read -r input_val || true
+    fi
+
+    if [[ -z "$input_val" && -n "$default_val" ]]; then
+        input_val="$default_val"
+    fi
+    eval "$var_name=\"\$input_val\""
+}
+
 inspect_and_resolve_nginx() {
     local DOMAIN="${1:-localhost}"
     local INBOUND_PORT="${2:-443}"
@@ -54,8 +73,7 @@ inspect_and_resolve_nginx() {
     echo "  1) Overwrite All (Backup existing configs to $NGINX_BACKUP_DIR and install gateway)"
     echo "  2) Keep All      (Preserve all existing sites; detect port conflicts)"
     echo "  3) Keep Selected (Review each configuration rule-by-rule)"
-    read -rp "Select an option [1-3, default: 1]: " NGINX_CHOICE
-    NGINX_CHOICE=${NGINX_CHOICE:-1}
+    prompt_read "Select an option [1-3, default: 1]: " NGINX_CHOICE "1"
 
     case "$NGINX_CHOICE" in
         1)
@@ -81,7 +99,7 @@ inspect_and_resolve_nginx() {
                 echo "Server Names / Ports detected:"
                 grep -E 'server_name|listen' "$cfg" | sed 's/^[ \t]*/   /' || echo "   (No listen/server_name found)"
                 echo ""
-                read -rp "Keep this configuration file? (y/N): " KEEP_FILE
+                prompt_read "Keep this configuration file? (y/N): " KEEP_FILE "N"
                 if [[ "$KEEP_FILE" =~ ^[Yy]$ ]]; then
                     echo "[+] Kept $cfg"
                 else

@@ -25,6 +25,21 @@ YELLOW = "\033[1;33m"
 CYAN = "\033[0;36m"
 NC = "\033[0m"
 
+def safe_input(prompt_text, default=""):
+    """Prompt user using standard input or fallback directly to /dev/tty."""
+    try:
+        sys.stdout.write(prompt_text)
+        sys.stdout.flush()
+        if os.path.exists("/dev/tty"):
+            with open("/dev/tty", "r") as tty:
+                val = tty.readline()
+        else:
+            val = sys.stdin.readline()
+        val = val.strip() if val else ""
+        return val if val else default
+    except Exception:
+        return default
+
 def tokenize_nginx(content: str):
     """Tokenize Nginx configuration, skipping comments."""
     tokens = []
@@ -443,7 +458,7 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
         print("  1) Update & Complete Only (Keeps all working panel & inbounds untouched; only routes missing items)")
         print("  2) Exhaustive Conflict Resolver (Check EVERY port and path rule-by-rule)")
         print("  3) Overwrite All (Backup existing configs to /etc/nginx/backup and replace with fresh gateway)")
-        choice = input(f"Select option [1-3, default: 1]: ").strip() or "1"
+        choice = safe_input("Select option [1-3, default: 1]: ", "1")
 
         if choice == "1":
             print(f"{GREEN}[+] Running in Update & Completion Mode.{NC}")
@@ -612,7 +627,7 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
                     print(f"\nHow would you like to handle this conflict?")
                     print(f"  1) Keep existing rule (Leave {s['file']} rule untouched)")
                     print(f"  2) Replace with Gateway rule (Archive {s['file']} and overwrite)")
-                    ans = input("Select option [1-2, default: 1]: ").strip() or "1"
+                    ans = safe_input("Select option [1-2, default: 1]: ", "1")
 
                     if ans == "1":
                         print(f"{GREEN}[+] Keeping existing rule for {ep_comp}.{NC}")

@@ -6,6 +6,25 @@ set -e
 # Repo: https://github.com/AliFanni-79/3XUI-Shop-Bot
 # ==============================================================================
 
+prompt_read() {
+    local prompt_msg="$1"
+    local var_name="$2"
+    local default_val="$3"
+    local input_val=""
+
+    printf "%b" "$prompt_msg"
+    if [[ -e /dev/tty ]]; then
+        read -r input_val </dev/tty || true
+    else
+        read -r input_val || true
+    fi
+
+    if [[ -z "$input_val" && -n "$default_val" ]]; then
+        input_val="$default_val"
+    fi
+    eval "$var_name=\"\$input_val\""
+}
+
 manage_shop_bot() {
     local DOMAIN="$1"
     local PANEL_INTERNAL_PORT="${2:-20830}"
@@ -18,7 +37,7 @@ manage_shop_bot() {
     echo "3XUI-Shop-Bot is an automated Telegram store for 3X-UI."
     echo "Repo: https://github.com/AliFanni-79/3XUI-Shop-Bot"
     echo ""
-    read -rp "Do you want to install 3XUI-Shop-Bot on this server? (y/N): " INSTALL_BOT
+    prompt_read "Do you want to install 3XUI-Shop-Bot on this server? (y/N): " INSTALL_BOT "N"
 
     if [[ ! "$INSTALL_BOT" =~ ^[Yy]$ ]]; then
         echo "[*] Skipping 3XUI-Shop-Bot installation."

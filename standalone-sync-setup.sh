@@ -20,10 +20,29 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Reconnect stdin to controlling terminal if piped (for interactive prompts)
-if [[ ! -t 0 ]] && [[ -c /dev/tty ]]; then
+# Reconnect stdin to controlling terminal if available (for interactive prompts)
+if [[ -e /dev/tty ]]; then
     exec < /dev/tty 2>/dev/null || true
 fi
+
+prompt_read() {
+    local prompt_msg="$1"
+    local var_name="$2"
+    local default_val="$3"
+    local input_val=""
+
+    printf "%b" "$prompt_msg"
+    if [[ -e /dev/tty ]]; then
+        read -r input_val </dev/tty || true
+    else
+        read -r input_val || true
+    fi
+
+    if [[ -z "$input_val" && -n "$default_val" ]]; then
+        input_val="$default_val"
+    fi
+    eval "$var_name=\"\$input_val\""
+}
 
 REPO_URL="${XUI_GATEWAY_REPO:-https://github.com/AliFanni-79/3XUI-Server-Starter-Pack.git}"
 TARGET_DIR="/root/3XUI-Server-Starter-Pack"
@@ -51,24 +70,18 @@ echo "=========================================================="
 apt-get update -y
 apt-get install -y nginx python3 sqlite3 certbot python3-certbot-nginx curl
 
-read -rp "Enter your Domain Name (e.g. vpn.example.com): " DOMAIN
-read -rp "Enter Inbounds Public Gateway Port [default: 443]: " INBOUNDS_PORT
-INBOUNDS_PORT=${INBOUNDS_PORT:-443}
+prompt_read "Enter your Domain Name (e.g. vpn.example.com): " DOMAIN
+while [[ -z "$DOMAIN" ]]; do
+    echo -e "${RED}Domain name cannot be empty.${NC}"
+    prompt_read "Enter your Domain Name: " DOMAIN
+done
 
-read -rp "Enter 3X-UI Web Panel Public Port [default: 2083]: " PANEL_PUBLIC_PORT
-PANEL_PUBLIC_PORT=${PANEL_PUBLIC_PORT:-2083}
-
-read -rp "Enter 3X-UI Subscription Public Port [default: 2096]: " SUB_PUBLIC_PORT
-SUB_PUBLIC_PORT=${SUB_PUBLIC_PORT:-2096}
-
-read -rp "Enter Telegram Bot WebUI Public Port [default: 8443]: " BOT_PUBLIC_PORT
-BOT_PUBLIC_PORT=${BOT_PUBLIC_PORT:-8443}
-
-read -rp "Enter Telegram Bot Local Port [default: 8080]: " BOT_INTERNAL_PORT
-BOT_INTERNAL_PORT=${BOT_INTERNAL_PORT:-8080}
-
-read -rp "Enter 3X-UI Subscription URL Root Path [default: /sub/]: " SUB_PATH
-SUB_PATH=${SUB_PATH:-/sub/}
+prompt_read "Enter Inbounds Public Gateway Port [default: 443]: " INBOUNDS_PORT "443"
+prompt_read "Enter 3X-UI Web Panel Public Port [default: 2083]: " PANEL_PUBLIC_PORT "2083"
+prompt_read "Enter 3X-UI Subscription Public Port [default: 2096]: " SUB_PUBLIC_PORT "2096"
+prompt_read "Enter Telegram Bot WebUI Public Port [default: 8443]: " BOT_PUBLIC_PORT "8443"
+prompt_read "Enter Telegram Bot Local Port [default: 8080]: " BOT_INTERNAL_PORT "8080"
+prompt_read "Enter 3X-UI Subscription URL Root Path [default: /sub/]: " SUB_PATH "/sub/"
 [[ "$SUB_PATH" != /* ]] && SUB_PATH="/$SUB_PATH"
 [[ "$SUB_PATH" != */ ]] && SUB_PATH="$SUB_PATH/"
 
@@ -88,7 +101,7 @@ elif [[ -f "$DEFAULT_LE_CERT" && -f "$DEFAULT_LE_KEY" ]]; then
     SSL_KEY="$DEFAULT_LE_KEY"
 else
     echo "No certificate automatically detected."
-    read -rp "Issue Let's Encrypt certificate now? (y/N): " ISSUE_SSL
+    prompt_read "Issue Let's Encrypt certificate now? (y/N): " ISSUE_SSL "N"
     if [[ "$ISSUE_SSL" =~ ^[Yy]$ ]]; then
         systemctl stop nginx 2>/dev/null || true
         certbot certonly --standalone -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email
@@ -96,8 +109,8 @@ else
         SSL_KEY="$DEFAULT_LE_KEY"
         systemctl start nginx 2>/dev/null || true
     else
-        read -rp "Enter path to fullchain.pem: " SSL_CERT
-        read -rp "Enter path to privkey.pem: " SSL_KEY
+        prompt_read "Enter path to fullchain.pem: " SSL_CERT
+        prompt_read "Enter path to privkey.pem: " SSL_KEY
     fi
 fi
 
@@ -179,7 +192,7 @@ echo -e "${GREEN}  Run 'xui-sync status' to verify all active endpoints.   ${NC}
 echo -e "${GREEN}==========================================================${NC}"
 echo ""
 
-read -rp "Would you like to support this project and star it on GitHub? (y/N): " STAR_CHOICE
+prompt_read "Would you like to support this project and star it on GitHub? (y/N): " STAR_CHOICE "N"
 if [[ "$STAR_CHOICE" =~ ^[Yy]$ ]]; then
     GITHUB_URL="https://github.com/AliFanni-79/3XUI-Server-Starter-Pack"
     echo ""
