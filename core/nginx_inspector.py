@@ -233,16 +233,28 @@ def read_xui_database(db_path="/etc/x-ui/x-ui.db"):
         cur.execute("SELECT key, value FROM settings")
         settings = dict(cur.fetchall())
 
-        cur.execute("SELECT id, port, protocol, stream_settings, remark FROM inbounds")
+        cur.execute("PRAGMA table_info(inbounds)")
+        inbound_cols = [r[1] for r in cur.fetchall()]
+        has_node_id = "node_id" in inbound_cols
+
+        if has_node_id:
+            cur.execute("SELECT id, port, protocol, stream_settings, remark, node_id FROM inbounds")
+        else:
+            cur.execute("SELECT id, port, protocol, stream_settings, remark, 0 AS node_id FROM inbounds")
+
         inbounds = []
         for row in cur.fetchall():
-            i_id, i_port, proto, stream_raw, remark = row
+            i_id, i_port, proto, stream_raw, remark, node_id = row
+            # Skip remote node inbounds (node_id > 0)
+            if node_id is not None and int(node_id) > 0:
+                continue
+
             try:
                 stream = json.loads(stream_raw)
             except Exception:
                 stream = {}
             net = stream.get("network", "tcp")
-            net_key = f"{net}Settings"
+            net_key = f"{net}Settings" if net != "httpupgrade" else "httpupgradeSettings"
             path_key = "serviceName" if net == "grpc" else "path"
             path = stream.get(net_key, {}).get(path_key, "")
             inbounds.append({

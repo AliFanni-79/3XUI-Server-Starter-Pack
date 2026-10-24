@@ -52,7 +52,7 @@ cmd_hosts() {
         exit 1
     fi
     echo "=== 3X-UI Hosts Table ==="
-    sqlite3 "$DB_PATH" -header -column "SELECT id, inbound_id, remark, address, port, security, sni, path, ech_config_list FROM hosts;" 2>/dev/null || echo "Hosts table is empty or not yet migrated."
+    sqlite3 "$DB_PATH" -header -column "SELECT id, inbound_id, remark, address, port, security, sni, host_header, path, ech_config_list FROM hosts;" 2>/dev/null || echo "Hosts table is empty or not yet migrated."
 }
 
 cmd_log() {

@@ -3,6 +3,7 @@ import sys
 import json
 import sqlite3
 import subprocess
+import shutil
 import time
 import logging
 
@@ -44,6 +45,74 @@ def extract_ech_config(stream_dict):
             if "ech_config_list" in sec_dict and sec_dict["ech_config_list"]:
                 return str(sec_dict["ech_config_list"]).strip()
     return ""
+
+def extract_inbound_host_header(stream_dict, default_domain=""):
+    """Extract configured Host header from inbound stream settings."""
+    if not isinstance(stream_dict, dict):
+        return default_domain
+    net = stream_dict.get("network", "tcp")
+    net_key = f"{net}Settings" if net != "httpupgrade" else "httpupgradeSettings"
+    net_settings = stream_dict.get(net_key, {})
+    if not isinstance(net_settings, dict):
+        net_settings = {}
+
+    host_val = None
+    if net == "ws":
+        headers = net_settings.get("headers", {})
+        if isinstance(headers, dict):
+            host_val = headers.get("Host") or headers.get("host")
+        if not host_val:
+            host_val = net_settings.get("host")
+    elif net in ["httpupgrade", "splithttp", "xhttp"]:
+        host_val = net_settings.get("host")
+        if not host_val:
+            headers = net_settings.get("headers", {})
+            if isinstance(headers, dict):
+                host_val = headers.get("Host") or headers.get("host")
+    elif net == "grpc":
+        host_val = net_settings.get("authority")
+    elif net == "http":
+        h = net_settings.get("host")
+        if isinstance(h, list) and len(h) > 0:
+            host_val = h[0]
+        elif isinstance(h, str):
+            host_val = h
+    elif net == "tcp":
+        tcp_header = net_settings.get("header", {})
+        if isinstance(tcp_header, dict) and tcp_header.get("type") == "http":
+            req_headers = tcp_header.get("request", {}).get("headers", {})
+            if isinstance(req_headers, dict):
+                h = req_headers.get("Host") or req_headers.get("host")
+                if isinstance(h, list) and len(h) > 0:
+                    host_val = h[0]
+                elif isinstance(h, str):
+                    host_val = h
+
+    if host_val and str(host_val).strip():
+        return str(host_val).strip()
+
+    return default_domain
+
+def extract_inbound_sni(stream_dict, default_domain=""):
+    """Extract configured SNI from inbound stream settings."""
+    if not isinstance(stream_dict, dict):
+        return default_domain
+    sec = stream_dict.get("security", "none")
+    if sec == "reality":
+        server_names = stream_dict.get("realitySettings", {}).get("serverNames", [])
+        if server_names and server_names[0] and str(server_names[0]).strip():
+            return str(server_names[0]).strip()
+    elif sec == "tls":
+        server_name = stream_dict.get("tlsSettings", {}).get("serverName", "")
+        if server_name and str(server_name).strip():
+            return str(server_name).strip()
+
+    # Even if security is 'none' (or stripped), preserve original tlsSettings serverName
+    tls_sn = stream_dict.get("tlsSettings", {}).get("serverName", "")
+    if tls_sn and str(tls_sn).strip():
+        return str(tls_sn).strip()
+
+    return default_domain
 
 def sync():
     conf = load_config()
@@ -126,7 +195,14 @@ def sync():
         db_modified = True
 
     # 2. Inspect Inbounds
-    cursor.execute("SELECT id, port, listen, protocol, settings, stream_settings, remark, enable FROM inbounds")
+    cursor.execute("PRAGMA table_info(inbounds)")
+    inbound_cols = [r[1] for r in cursor.fetchall()]
+    has_node_id = "node_id" in inbound_cols
+
+    if has_node_id:
+        cursor.execute("SELECT id, port, listen, protocol, settings, stream_settings, remark, enable, node_id FROM inbounds")
+    else:
+        cursor.execute("SELECT id, port, listen, protocol, settings, stream_settings, remark, enable, 0 AS node_id FROM inbounds")
     inbounds = cursor.fetchall()
 
     proxied_http_inbounds = []
@@ -138,8 +214,15 @@ def sync():
         seen_paths.add(sub_path.rstrip("/"))
 
     for row in inbounds:
-        inbound_id, port, listen, protocol, settings_json, stream_json, remark, enable = row
+        inbound_id, port, listen, protocol, settings_json, stream_json, remark, enable, node_id = row
         if not enable:
+            continue
+
+        # MULTI-NODE PROTECTION:
+        # node_id > 0 means the inbound is hosted on a remote/external 3X-UI node.
+        # We must NOT modify remote inbounds, bind them to 127.0.0.1, or route them in local Nginx.
+        if node_id is not None and int(node_id) > 0:
+            logging.info(f"Skipping remote node inbound #{inbound_id} (node_id={node_id})")
             continue
 
         try:
@@ -149,6 +232,10 @@ def sync():
 
         network = stream.get("network", "tcp")
         security = stream.get("security", "none")
+
+        # Extract configured Host header & SNI from inbound stream settings
+        inbound_host = extract_inbound_host_header(stream, conf["domain"])
+        inbound_sni = extract_inbound_sni(stream, conf["domain"])
 
         # Extract ECH (Encrypted Client Hello) before modifying anything
         ech_config = extract_ech_config(stream)
@@ -170,6 +257,7 @@ def sync():
                 "network": network,
                 "remark": remark or f"Reality-{inbound_id}",
                 "sni": sni,
+                "host_header": extract_inbound_host_header(stream, ""),
                 "fingerprint": fingerprint,
                 "public_key": public_key,
                 "short_id": short_id,
@@ -246,6 +334,8 @@ def sync():
             "network": network,
             "path": current_path,
             "remark": remark or f"Inbound-{inbound_id}",
+            "host_header": inbound_host,
+            "sni": inbound_sni,
             "ech_config": ech_config
         })
 
@@ -254,75 +344,215 @@ def sync():
     if cursor.fetchone():
         now_ms = int(time.time() * 1000)
 
+        cursor.execute("PRAGMA table_info(hosts)")
+        host_table_cols = {col[1] for col in cursor.fetchall()}
+
+        known_cols = ["id", "inbound_id", "address", "port", "security", "sni", "host_header", "path", "ech_config_list", "fingerprint"]
+        selected_cols = [c for c in known_cols if c in host_table_cols]
+        col_idx = {c: idx for idx, c in enumerate(selected_cols)}
+        select_clause = ", ".join(selected_cols)
+
+        def find_matching_host(existing_rows, target_domain, target_port, target_sec=None):
+            """
+            Find the matching gateway host record from a list of rows.
+            Prevents overwriting secondary/custom endpoints (like CDNs or other nodes)
+            while ensuring the local gateway record is accurately updated.
+            """
+            if not existing_rows:
+                return None
+
+            # 1. Exact match on target_domain and target_port
+            for row in existing_rows:
+                h_addr = row[col_idx["address"]] if "address" in col_idx else ""
+                h_port = row[col_idx["port"]] if "port" in col_idx else 0
+                h_sec = row[col_idx["security"]] if "security" in col_idx else ""
+                if h_addr == target_domain and h_port == target_port:
+                    if target_sec is None or h_sec == target_sec:
+                        return row
+
+            # 2. Match on target_domain (even if port changed in gateway config)
+            for row in existing_rows:
+                h_addr = row[col_idx["address"]] if "address" in col_idx else ""
+                h_sec = row[col_idx["security"]] if "security" in col_idx else ""
+                if h_addr == target_domain:
+                    if target_sec is None or h_sec == target_sec:
+                        return row
+
+            # 3. For REALITY inbounds: Match on port and security == 'reality'
+            if target_sec == "reality":
+                for row in existing_rows:
+                    h_port = row[col_idx["port"]] if "port" in col_idx else 0
+                    h_sec = row[col_idx["security"]] if "security" in col_idx else ""
+                    if h_port == target_port and h_sec == "reality":
+                        return row
+
+            # 4. Adopt unconfigured / blank template host
+            for row in existing_rows:
+                h_addr = row[col_idx["address"]] if "address" in col_idx else ""
+                if not h_addr or h_addr.strip() == "":
+                    return row
+
+            # Any remaining rows belong to custom CDNs, alternative addresses, or other endpoints.
+            # Do NOT overwrite them!
+            return None
+
         # Sync HTTP-proxied inbounds into hosts
         for ib in proxied_http_inbounds:
-            cursor.execute("SELECT id, address, port, security, path, ech_config_list FROM hosts WHERE inbound_id = ?", (ib["id"],))
-            host_row = cursor.fetchone()
-            if not host_row:
-                cursor.execute("""
-                    INSERT INTO hosts (
-                        inbound_id, sort_order, remark, server_description,
-                        is_disabled, is_hidden, address, port, security,
-                        sni, host_header, path, ech_config_list, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    ib["id"], 0, ib["remark"], "",
-                    0, 0, conf["domain"], conf["inbounds_port"], "tls",
-                    conf["domain"], conf["domain"], ib["path"], ib["ech_config"], now_ms, now_ms
-                ))
-                db_modified = True
-            else:
-                h_id, h_addr, h_port, h_sec, h_path, h_ech = host_row
-                if (h_addr != conf["domain"] or h_port != conf["inbounds_port"] or
-                    h_sec != "tls" or h_path != ib["path"] or (ib["ech_config"] and h_ech != ib["ech_config"])):
-                    cursor.execute("""
-                        UPDATE hosts SET
-                            address = ?, port = ?, security = 'tls',
-                            sni = ?, host_header = ?, path = ?,
-                            ech_config_list = COALESCE(NULLIF(?, ''), ech_config_list),
-                            updated_at = ?
-                        WHERE id = ?
-                    """, (
-                        conf["domain"], conf["inbounds_port"],
-                        conf["domain"], conf["domain"], ib["path"],
-                        ib["ech_config"], now_ms, h_id
-                    ))
+            cursor.execute(f"SELECT {select_clause} FROM hosts WHERE inbound_id = ?", (ib["id"],))
+            existing_rows = cursor.fetchall()
+
+            matched = find_matching_host(existing_rows, conf["domain"], conf["inbounds_port"], "tls")
+
+            desired_host = {
+                "inbound_id": ib["id"],
+                "sort_order": 0,
+                "remark": ib["remark"],
+                "server_description": "",
+                "is_disabled": 0,
+                "is_hidden": 0,
+                "address": conf["domain"],
+                "port": conf["inbounds_port"],
+                "security": "tls",
+                "sni": ib["sni"],
+                "host_header": ib["host_header"],
+                "path": ib["path"],
+                "ech_config_list": ib["ech_config"],
+            }
+            if "node_id" in host_table_cols:
+                desired_host["node_id"] = 0
+
+            if matched:
+                h_id = matched[col_idx["id"]]
+                h_addr = matched[col_idx["address"]] if "address" in col_idx else ""
+                h_port = matched[col_idx["port"]] if "port" in col_idx else 0
+                h_sec = matched[col_idx["security"]] if "security" in col_idx else ""
+                h_sni = matched[col_idx["sni"]] if "sni" in col_idx else ""
+                h_host = matched[col_idx["host_header"]] if "host_header" in col_idx else ""
+                h_path = matched[col_idx["path"]] if "path" in col_idx else ""
+                h_ech = matched[col_idx["ech_config_list"]] if "ech_config_list" in col_idx else ""
+
+                needs_update = (
+                    h_addr != desired_host["address"] or
+                    h_port != desired_host["port"] or
+                    h_sec != desired_host["security"] or
+                    h_sni != desired_host["sni"] or
+                    h_host != desired_host["host_header"] or
+                    h_path != desired_host["path"] or
+                    (desired_host["ech_config_list"] and h_ech != desired_host["ech_config_list"])
+                )
+
+                if needs_update:
+                    update_fields = {
+                        "address": desired_host["address"],
+                        "port": desired_host["port"],
+                        "security": desired_host["security"],
+                        "sni": desired_host["sni"],
+                        "host_header": desired_host["host_header"],
+                        "path": desired_host["path"],
+                    }
+                    if "ech_config_list" in host_table_cols and desired_host["ech_config_list"]:
+                        update_fields["ech_config_list"] = desired_host["ech_config_list"]
+                    if "updated_at" in host_table_cols:
+                        update_fields["updated_at"] = now_ms
+
+                    set_clause = ", ".join([f"{k} = ?" for k in update_fields.keys()])
+                    cursor.execute(f"UPDATE hosts SET {set_clause} WHERE id = ?", list(update_fields.values()) + [h_id])
                     db_modified = True
+            else:
+                insert_cols = []
+                insert_vals = []
+                for k, v in desired_host.items():
+                    if k in host_table_cols:
+                        insert_cols.append(k)
+                        insert_vals.append(v)
+                if "created_at" in host_table_cols:
+                    insert_cols.append("created_at")
+                    insert_vals.append(now_ms)
+                if "updated_at" in host_table_cols:
+                    insert_cols.append("updated_at")
+                    insert_vals.append(now_ms)
+
+                placeholders = ", ".join(["?"] * len(insert_cols))
+                cursor.execute(f"INSERT INTO hosts ({', '.join(insert_cols)}) VALUES ({placeholders})", insert_vals)
+                db_modified = True
 
         # Sync REALITY inbounds into hosts (Preserving Reality security, SNI, Fingerprint, and ECH!)
         for r_ib in reality_inbounds:
-            cursor.execute("SELECT id, address, port, security, sni, fingerprint, ech_config_list FROM hosts WHERE inbound_id = ?", (r_ib["id"],))
-            host_row = cursor.fetchone()
-            if not host_row:
-                cursor.execute("""
-                    INSERT INTO hosts (
-                        inbound_id, sort_order, remark, server_description,
-                        is_disabled, is_hidden, address, port, security,
-                        sni, fingerprint, ech_config_list, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    r_ib["id"], 0, r_ib["remark"], "",
-                    0, 0, conf["domain"], r_ib["port"], "reality",
-                    r_ib["sni"], r_ib["fingerprint"], r_ib["ech_config"], now_ms, now_ms
-                ))
-                db_modified = True
-            else:
-                h_id, h_addr, h_port, h_sec, h_sni, h_fp, h_ech = host_row
-                if (h_sec != "reality" or h_sni != r_ib["sni"] or h_fp != r_ib["fingerprint"] or
-                    (r_ib["ech_config"] and h_ech != r_ib["ech_config"])):
-                    cursor.execute("""
-                        UPDATE hosts SET
-                            address = ?, port = ?, security = 'reality',
-                            sni = ?, fingerprint = ?,
-                            ech_config_list = COALESCE(NULLIF(?, ''), ech_config_list),
-                            updated_at = ?
-                        WHERE id = ?
-                    """, (
-                        conf["domain"], r_ib["port"],
-                        r_ib["sni"], r_ib["fingerprint"],
-                        r_ib["ech_config"], now_ms, h_id
-                    ))
+            cursor.execute(f"SELECT {select_clause} FROM hosts WHERE inbound_id = ?", (r_ib["id"],))
+            existing_rows = cursor.fetchall()
+
+            matched = find_matching_host(existing_rows, conf["domain"], r_ib["port"], "reality")
+
+            desired_reality_host = {
+                "inbound_id": r_ib["id"],
+                "sort_order": 0,
+                "remark": r_ib["remark"],
+                "server_description": "",
+                "is_disabled": 0,
+                "is_hidden": 0,
+                "address": conf["domain"],
+                "port": r_ib["port"],
+                "security": "reality",
+                "sni": r_ib["sni"],
+                "host_header": r_ib.get("host_header", ""),
+                "path": "",
+                "ech_config_list": r_ib["ech_config"],
+                "fingerprint": r_ib["fingerprint"],
+            }
+            if "node_id" in host_table_cols:
+                desired_reality_host["node_id"] = 0
+
+            if matched:
+                h_id = matched[col_idx["id"]]
+                h_addr = matched[col_idx["address"]] if "address" in col_idx else ""
+                h_port = matched[col_idx["port"]] if "port" in col_idx else 0
+                h_sec = matched[col_idx["security"]] if "security" in col_idx else ""
+                h_sni = matched[col_idx["sni"]] if "sni" in col_idx else ""
+                h_host = matched[col_idx["host_header"]] if "host_header" in col_idx else ""
+                h_ech = matched[col_idx["ech_config_list"]] if "ech_config_list" in col_idx else ""
+                h_fp = matched[col_idx["fingerprint"]] if "fingerprint" in col_idx else ""
+
+                needs_update = (
+                    h_port != desired_reality_host["port"] or
+                    h_sec != "reality" or
+                    h_sni != desired_reality_host["sni"] or
+                    (desired_reality_host["fingerprint"] and h_fp != desired_reality_host["fingerprint"]) or
+                    (desired_reality_host["ech_config_list"] and h_ech != desired_reality_host["ech_config_list"])
+                )
+
+                if needs_update:
+                    update_fields = {
+                        "port": desired_reality_host["port"],
+                        "security": "reality",
+                        "sni": desired_reality_host["sni"],
+                    }
+                    if "fingerprint" in host_table_cols:
+                        update_fields["fingerprint"] = desired_reality_host["fingerprint"]
+                    if "ech_config_list" in host_table_cols and desired_reality_host["ech_config_list"]:
+                        update_fields["ech_config_list"] = desired_reality_host["ech_config_list"]
+                    if "updated_at" in host_table_cols:
+                        update_fields["updated_at"] = now_ms
+
+                    set_clause = ", ".join([f"{k} = ?" for k in update_fields.keys()])
+                    cursor.execute(f"UPDATE hosts SET {set_clause} WHERE id = ?", list(update_fields.values()) + [h_id])
                     db_modified = True
+            else:
+                insert_cols = []
+                insert_vals = []
+                for k, v in desired_reality_host.items():
+                    if k in host_table_cols:
+                        insert_cols.append(k)
+                        insert_vals.append(v)
+                if "created_at" in host_table_cols:
+                    insert_cols.append("created_at")
+                    insert_vals.append(now_ms)
+                if "updated_at" in host_table_cols:
+                    insert_cols.append("updated_at")
+                    insert_vals.append(now_ms)
+
+                placeholders = ", ".join(["?"] * len(insert_cols))
+                cursor.execute(f"INSERT INTO hosts ({', '.join(insert_cols)}) VALUES ({placeholders})", insert_vals)
+                db_modified = True
 
     if db_modified:
         conn.commit()
@@ -350,6 +580,14 @@ def generate_nginx_config(conf, inbounds, panel_port, panel_proto, web_base_path
     skip_bot = conf.get("skip_bot_proxy", False)
     skip_inbound_ids = set(conf.get("skip_inbound_ids", []))
 
+    # Include custom inbound host headers in server_name so Nginx accepts and proxies them
+    inbound_server_names = [domain]
+    for ib in inbounds:
+        h = ib.get("host_header", "")
+        if h and h != domain and " " not in h and h not in inbound_server_names:
+            inbound_server_names.append(h)
+    inbounds_server_name_str = " ".join(inbound_server_names)
+
     lines = [
         "# Auto-generated by xui-nginx-sync.py - DO NOT EDIT MANUALLY",
         "map $http_upgrade $connection_upgrade {",
@@ -371,7 +609,7 @@ def generate_nginx_config(conf, inbounds, panel_port, panel_proto, web_base_path
         f"    listen {inbounds_port} ssl;",
         f"    listen [::]:{inbounds_port} ssl;",
         "    http2 on;",
-        f"    server_name {domain};",
+        f"    server_name {inbounds_server_name_str};",
         f"    ssl_certificate {ssl_cert};",
         f"    ssl_certificate_key {ssl_key};",
         "    ssl_protocols TLSv1.2 TLSv1.3;",
@@ -541,12 +779,16 @@ def generate_nginx_config(conf, inbounds, panel_port, panel_proto, web_base_path
     with open(conf_path, "w") as f:
         f.write(conf_content)
 
-    test = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
-    if test.returncode == 0:
-        subprocess.run(["systemctl", "reload", "nginx"], check=False)
-        logging.info("Nginx configuration updated and reloaded successfully.")
+    if shutil.which("nginx"):
+        test = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
+        if test.returncode == 0:
+            if shutil.which("systemctl"):
+                subprocess.run(["systemctl", "reload", "nginx"], check=False)
+            logging.info("Nginx configuration updated and reloaded successfully.")
+        else:
+            logging.error(f"Nginx config validation failed:\n{test.stderr}")
     else:
-        logging.error(f"Nginx config validation failed:\n{test.stderr}")
+        logging.info(f"Nginx configuration written to {conf_path} (nginx binary not in PATH).")
 
 if __name__ == "__main__":
     sync()
