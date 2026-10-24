@@ -79,7 +79,11 @@ Multiplexes all inbound proxy connections onto a single public port (`443`), exp
 
 Installs dependencies, configures Nginx, verifies/installs latest 3X-UI, sets up the sync engine, and optionally installs 3XUI-Shop-Bot:
 
-**One-Line Command:**
+**One-Line Command (Universal - Root or Sudo):**
+```bash
+sudo bash -c "$(curl -Ls https://raw.githubusercontent.com/AliFanni-79/3XUI-Server-Starter-Pack/master/install.sh)"
+```
+*(Or if already logged in as root)*:
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/AliFanni-79/3XUI-Server-Starter-Pack/master/install.sh)
 ```
@@ -101,7 +105,11 @@ chmod +x install.sh
 
 If you **already have 3X-UI and/or 3XUI-Shop-Bot running** and only want to install the Nginx gateway and automated synchronization without touching your existing services:
 
-**One-Line Command:**
+**One-Line Command (Universal - Root or Sudo):**
+```bash
+sudo bash -c "$(curl -Ls https://raw.githubusercontent.com/AliFanni-79/3XUI-Server-Starter-Pack/master/standalone-sync-setup.sh)"
+```
+*(Or if already logged in as root)*:
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/AliFanni-79/3XUI-Server-Starter-Pack/master/standalone-sync-setup.sh)
 ```

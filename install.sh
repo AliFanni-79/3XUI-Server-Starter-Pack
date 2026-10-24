@@ -18,6 +18,11 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# Reconnect stdin to controlling terminal if piped (for interactive prompts)
+if [[ ! -t 0 ]] && [[ -c /dev/tty ]]; then
+    exec < /dev/tty 2>/dev/null || true
+fi
+
 REPO_URL="${XUI_GATEWAY_REPO:-https://github.com/AliFanni-79/3XUI-Server-Starter-Pack.git}"
 TARGET_DIR="/root/3XUI-Server-Starter-Pack"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
@@ -33,6 +38,7 @@ if [[ ! -d "$SCRIPT_DIR/core" ]]; then
         echo -e "${YELLOW}[!] If using a custom fork or branch, run: export XUI_GATEWAY_REPO=https://github.com/your/repo.git${NC}"
         exit 1
     fi
+    exec < /dev/tty 2>/dev/null || true
     exec bash "$TARGET_DIR/install.sh" "$@"
 fi
 
