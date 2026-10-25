@@ -79,11 +79,21 @@ done
 prompt_read "Enter Inbounds Public Gateway Port [default: 443]: " INBOUNDS_PORT "443"
 prompt_read "Enter 3X-UI Web Panel Public Port [default: 2083]: " PANEL_PUBLIC_PORT "2083"
 prompt_read "Enter 3X-UI Subscription Public Port [default: 2096]: " SUB_PUBLIC_PORT "2096"
-prompt_read "Enter Telegram Bot WebUI Public Port [default: 8443]: " BOT_PUBLIC_PORT "8443"
-prompt_read "Enter Telegram Bot Local Port [default: 8080]: " BOT_INTERNAL_PORT "8080"
 prompt_read "Enter 3X-UI Subscription URL Root Path [default: /sub/]: " SUB_PATH "/sub/"
 [[ "$SUB_PATH" != /* ]] && SUB_PATH="/$SUB_PATH"
 [[ "$SUB_PATH" != */ ]] && SUB_PATH="$SUB_PATH/"
+
+echo ""
+prompt_read "Is 3XUI-Shop-Bot installed or planned on this server? (y/N): " HAS_BOT "N"
+if [[ "$HAS_BOT" =~ ^[Yy]$ ]]; then
+    HAS_BOT_BOOL="true"
+    prompt_read "Enter Telegram Bot WebUI Public Port [default: 8443]: " BOT_PUBLIC_PORT "8443"
+    prompt_read "Enter Telegram Bot Local Port [default: 8080]: " BOT_INTERNAL_PORT "8080"
+else
+    HAS_BOT_BOOL="false"
+    BOT_PUBLIC_PORT="8443"
+    BOT_INTERNAL_PORT="8080"
+fi
 
 # SSL Detection
 DEFAULT_LE_CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
@@ -116,7 +126,11 @@ fi
 
 # Resolve Nginx Conflicts & Pre-checks
 if [[ -f "$SCRIPT_DIR/core/nginx_manager.sh" ]]; then
-    bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT" "$BOT_PUBLIC_PORT"
+    CHECK_BOT_PORT="$BOT_PUBLIC_PORT"
+    if [[ "$HAS_BOT_BOOL" != "true" ]]; then
+        CHECK_BOT_PORT="0"
+    fi
+    bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT" "$CHECK_BOT_PORT"
 fi
 
 # Configure SQLite WAL & 3X-UI settings
@@ -156,6 +170,7 @@ data.update({
     'sub_internal_port': 20960,
     'bot_public_port': int('${BOT_PUBLIC_PORT}'),
     'bot_internal_port': int('${BOT_INTERNAL_PORT}'),
+    'skip_bot_proxy': ('${HAS_BOT_BOOL}' != 'true'),
     'sub_path': '${SUB_PATH}',
     'db_path': '/etc/x-ui/x-ui.db',
     'nginx_conf_path': '/etc/nginx/conf.d/xui_proxy.conf'

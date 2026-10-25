@@ -33,7 +33,7 @@ inspect_and_resolve_nginx() {
     local INBOUND_PORT="${2:-443}"
     local PANEL_PORT="${3:-2083}"
     local SUB_PORT="${4:-2096}"
-    local BOT_PORT="${5:-8443}"
+    local BOT_PORT="${5:-0}"
     local SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
 
     if ! command -v nginx >/dev/null 2>&1; then
@@ -88,7 +88,7 @@ inspect_and_resolve_nginx() {
             ;;
         2)
             echo "[*] Keeping all existing configurations."
-            check_port_conflicts "$INBOUND_PORT" "$PANEL_PORT" "$SUB_PORT"
+            check_port_conflicts "$INBOUND_PORT" "$PANEL_PORT" "$SUB_PORT" "$BOT_PORT"
             ;;
         3)
             echo "[*] Reviewing configurations rule-by-rule..."
@@ -108,7 +108,7 @@ inspect_and_resolve_nginx() {
                 fi
             done
             find /etc/nginx/sites-enabled -xtype l -delete 2>/dev/null || true
-            check_port_conflicts "$INBOUND_PORT" "$PANEL_PORT" "$SUB_PORT"
+            check_port_conflicts "$INBOUND_PORT" "$PANEL_PORT" "$SUB_PORT" "$BOT_PORT"
             ;;
         *)
             echo "[!] Invalid option selected. Defaulting to Overwrite with Backup."
@@ -125,9 +125,13 @@ check_port_conflicts() {
     local INBOUND_PORT="$1"
     local PANEL_PORT="$2"
     local SUB_PORT="$3"
+    local BOT_PORT="${4:-0}"
 
     echo "[*] Checking for port collisions with existing Nginx rules..."
     local PORTS_CHECK=("$INBOUND_PORT" "$PANEL_PORT" "$SUB_PORT")
+    if [[ -n "$BOT_PORT" && "$BOT_PORT" != "0" ]]; then
+        PORTS_CHECK+=("$BOT_PORT")
+    fi
 
     for port in "${PORTS_CHECK[@]}"; do
         local OCCUPIED

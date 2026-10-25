@@ -375,7 +375,10 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
     inbounds_port = int(inbounds_port)
     panel_port = int(panel_port)
     sub_port = int(sub_port)
-    bot_port = int(bot_port)
+    try:
+        bot_port = int(bot_port)
+    except (ValueError, TypeError):
+        bot_port = 0
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir = f"/etc/nginx/backup_{timestamp}"
@@ -408,11 +411,12 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
         (inbounds_port, "Gateway Inbounds Public Port"),
         (panel_port, "3X-UI Web Panel Public Port"),
         (sub_port, "Subscription Public Port"),
-        (bot_port, "Telegram Bot WebUI Port"),
         (20830, "3X-UI Panel Internal Loopback Port"),
-        (20960, "Subscription Internal Loopback Port"),
-        (8080, "Telegram Bot Local Port")
+        (20960, "Subscription Internal Loopback Port")
     ]
+    if bot_port > 0:
+        system_ports_to_verify.append((bot_port, "Telegram Bot WebUI Port"))
+        system_ports_to_verify.append((8080, "Telegram Bot Local Port"))
     if xui_data and xui_data.get("inbounds"):
         for ib in xui_data["inbounds"]:
             system_ports_to_verify.append((ib["port"], f"Inbound #{ib['id']} Port"))
@@ -429,7 +433,7 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
         proxy_config.setdefault("root_location_rule", "return 444;")
         proxy_config.setdefault("skip_panel_proxy", False)
         proxy_config.setdefault("skip_sub_proxy", False)
-        proxy_config.setdefault("skip_bot_proxy", False)
+        proxy_config["skip_bot_proxy"] = (bot_port <= 0)
         proxy_config.setdefault("skip_inbound_ids", [])
         save_json(config_json_path, proxy_config)
         return 0
@@ -577,19 +581,20 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
         })
 
     # 5. Telegram Bot Port & Path
-    endpoints_to_check.append({
-        "port": bot_port,
-        "path": "/",
-        "component": "Telegram Shop-Bot WebUI Root",
-        "type": "bot",
-        "planned": "proxy_pass to 127.0.0.1:8080",
-        "ib_id": None
-    })
+    if bot_port > 0:
+        endpoints_to_check.append({
+            "port": bot_port,
+            "path": "/",
+            "component": "Telegram Shop-Bot WebUI Root",
+            "type": "bot",
+            "planned": "proxy_pass to 127.0.0.1:8080",
+            "ib_id": None
+        })
 
     root_rule = "return 444;"
     skip_panel = False
     skip_sub = False
-    skip_bot = False
+    skip_bot = (bot_port <= 0)
     skip_inbound_ids = []
     handled_files = set()
 

@@ -28,6 +28,7 @@ prompt_read() {
 manage_shop_bot() {
     local DOMAIN="$1"
     local PANEL_INTERNAL_PORT="${2:-20830}"
+    local ACTION="${3:-}"
     local BOT_DIR="/root/3XUI-Shop-Bot"
 
     echo ""
@@ -37,7 +38,32 @@ manage_shop_bot() {
     echo "3XUI-Shop-Bot is an automated Telegram store for 3X-UI."
     echo "Repo: https://github.com/AliFanni-79/3XUI-Shop-Bot"
     echo ""
-    prompt_read "Do you want to install 3XUI-Shop-Bot on this server? (y/N): " INSTALL_BOT "N"
+
+    local INSTALL_BOT="N"
+    if [[ "$ACTION" == "install" ]]; then
+        INSTALL_BOT="y"
+    else
+        prompt_read "Do you want to install 3XUI-Shop-Bot on this server? (y/N): " INSTALL_BOT "N"
+        if [[ "$INSTALL_BOT" =~ ^[Yy]$ ]]; then
+            prompt_read "Enter Telegram Bot WebUI Public Port [default: 8443]: " BOT_PUBLIC_PORT "8443"
+            prompt_read "Enter Telegram Bot Local Port [default: 8080]: " BOT_INTERNAL_PORT "8080"
+            if [[ -f "/etc/x-ui/nginx_proxy.json" ]]; then
+                python3 -c "
+import json
+try:
+    with open('/etc/x-ui/nginx_proxy.json', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    data['bot_public_port'] = int('${BOT_PUBLIC_PORT}')
+    data['bot_internal_port'] = int('${BOT_INTERNAL_PORT}')
+    data['skip_bot_proxy'] = False
+    with open('/etc/x-ui/nginx_proxy.json', 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+except Exception:
+    pass
+"
+            fi
+        fi
+    fi
 
     if [[ ! "$INSTALL_BOT" =~ ^[Yy]$ ]]; then
         echo "[*] Skipping 3XUI-Shop-Bot installation."

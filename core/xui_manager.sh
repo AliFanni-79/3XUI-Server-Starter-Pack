@@ -20,6 +20,14 @@ install_and_configure_xui() {
 
     if [[ ! -d /usr/local/x-ui || ! -f /etc/x-ui/x-ui.db ]]; then
         echo "[*] 3X-UI panel not found. Installing latest MHSanaei 3X-UI..."
+        # Silence redundant/conflicting prompts from upstream 3X-UI installer:
+        # - SQLite is used (required for sync engine)
+        # - Panel internal port set directly to PANEL_INTERNAL_PORT (20830)
+        # - SSL mode set to none (Nginx handles TLS gateway termination)
+        export XUI_NONINTERACTIVE=1
+        export XUI_DB_TYPE="sqlite"
+        export XUI_PANEL_PORT="${PANEL_INTERNAL_PORT}"
+        export XUI_SSL_MODE="none"
         bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
         sleep 2
     else

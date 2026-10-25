@@ -90,11 +90,21 @@ done
 prompt_read "Enter Inbounds Public Gateway Port [default: 443]: " INBOUNDS_PORT "443"
 prompt_read "Enter 3X-UI Web Panel Public Port [default: 2083]: " PANEL_PUBLIC_PORT "2083"
 prompt_read "Enter 3X-UI Subscription Public Port [default: 2096]: " SUB_PUBLIC_PORT "2096"
-prompt_read "Enter Telegram Bot WebUI Public Port [default: 8443]: " BOT_PUBLIC_PORT "8443"
-prompt_read "Enter Telegram Bot Local Port [default: 8080]: " BOT_INTERNAL_PORT "8080"
 prompt_read "Enter 3X-UI Subscription URL Root Path [default: /sub/]: " SUB_PATH "/sub/"
 [[ "$SUB_PATH" != /* ]] && SUB_PATH="/$SUB_PATH"
 [[ "$SUB_PATH" != */ ]] && SUB_PATH="$SUB_PATH/"
+
+echo ""
+prompt_read "Do you want to install 3XUI-Shop-Bot on this server? (y/N): " INSTALL_BOT_CHOICE "N"
+if [[ "$INSTALL_BOT_CHOICE" =~ ^[Yy]$ ]]; then
+    INSTALL_BOT="true"
+    prompt_read "Enter Telegram Bot WebUI Public Port [default: 8443]: " BOT_PUBLIC_PORT "8443"
+    prompt_read "Enter Telegram Bot Local Port [default: 8080]: " BOT_INTERNAL_PORT "8080"
+else
+    INSTALL_BOT="false"
+    BOT_PUBLIC_PORT="8443"
+    BOT_INTERNAL_PORT="8080"
+fi
 
 # 3. SSL Certificate Setup
 echo ""
@@ -132,15 +142,24 @@ fi
 
 # 4. Resolve Preconfigured Nginx Conflicts & Pre-checks
 chmod +x "$SCRIPT_DIR/core/nginx_manager.sh"
-bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT" "$BOT_PUBLIC_PORT"
+CHECK_BOT_PORT="$BOT_PUBLIC_PORT"
+if [[ "$INSTALL_BOT" != "true" ]]; then
+    CHECK_BOT_PORT="0"
+fi
+bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT" "$CHECK_BOT_PORT"
 
 # 5. Install / Verify 3X-UI Panel
 chmod +x "$SCRIPT_DIR/core/xui_manager.sh"
 bash "$SCRIPT_DIR/core/xui_manager.sh" "$DOMAIN" "$SUB_PUBLIC_PORT" "$PANEL_PUBLIC_PORT" 20830 20960
 
 # 6. Install / Integrate 3XUI-Shop-Bot (Optional)
-chmod +x "$SCRIPT_DIR/core/bot_manager.sh"
-bash "$SCRIPT_DIR/core/bot_manager.sh" "$DOMAIN" 20830
+if [[ "$INSTALL_BOT" == "true" ]]; then
+    chmod +x "$SCRIPT_DIR/core/bot_manager.sh"
+    bash "$SCRIPT_DIR/core/bot_manager.sh" "$DOMAIN" 20830 "install"
+else
+    echo ""
+    echo -e "${BLUE}[*] Skipping 3XUI-Shop-Bot installation.${NC}"
+fi
 
 # 7. Deploy Nginx Gateway Sync Engine
 echo -e "${BLUE}[*] Deploying synchronization engine and systemd watcher...${NC}"
@@ -166,6 +185,7 @@ data.update({
     'sub_internal_port': 20960,
     'bot_public_port': int('${BOT_PUBLIC_PORT}'),
     'bot_internal_port': int('${BOT_INTERNAL_PORT}'),
+    'skip_bot_proxy': ('${INSTALL_BOT}' != 'true'),
     'sub_path': '${SUB_PATH}',
     'db_path': '/etc/x-ui/x-ui.db',
     'nginx_conf_path': '/etc/nginx/conf.d/xui_proxy.conf'
@@ -207,7 +227,9 @@ echo -e "${GREEN}==========================================================${NC}
 echo " - Inbounds Gateway   : https://${DOMAIN}:${INBOUNDS_PORT}/"
 echo " - 3X-UI Web Panel    : https://${DOMAIN}:${PANEL_PUBLIC_PORT}/ (Direct proxy, no leak)"
 echo " - Subscription URL   : https://${DOMAIN}:${SUB_PUBLIC_PORT}${SUB_PATH}"
-echo " - Telegram Bot WebUI : https://${DOMAIN}:${BOT_PUBLIC_PORT}/"
+if [[ "$INSTALL_BOT" == "true" ]]; then
+    echo " - Telegram Bot WebUI : https://${DOMAIN}:${BOT_PUBLIC_PORT}/"
+fi
 echo " - Stealth Root (/)   : https://${DOMAIN}/ (Closes connection instantly with return 444)"
 echo ""
 echo "CLI Management Tool   : xui-sync (Run 'xui-sync help' for options)"
