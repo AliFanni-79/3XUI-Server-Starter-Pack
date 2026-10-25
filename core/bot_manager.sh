@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # Bot Manager: 3XUI-Shop-Bot Optional Installer & Sync Integration
 # Repo: https://github.com/AliFanni-79/3XUI-Shop-Bot
 #
-# Usage: bot_manager.sh DOMAIN [PANEL_INTERNAL_PORT] [install] [BOT_PUBLIC_PORT] [BOT_INTERNAL_PORT]
+# Usage: bot_manager.sh DOMAIN [PANEL_INTERNAL_PORT] [install|integrate] [BOT_PUBLIC_PORT] [BOT_INTERNAL_PORT] [BOT_DIR]
 # ==============================================================================
 
 _BOT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -18,7 +18,8 @@ manage_shop_bot() {
     local ACTION="${3:-}"
     local BOT_PUBLIC_PORT="${4:-}"
     local BOT_INTERNAL_PORT="${5:-}"
-    local BOT_DIR="/root/3XUI-Shop-Bot"
+    local BOT_DIR="${6:-/root/3XUI-Shop-Bot}"
+    [[ -n "$BOT_DIR" ]] || BOT_DIR="/root/3XUI-Shop-Bot"
     : "$PANEL_INTERNAL_PORT"
 
     ui_section "3XUI-Shop-Bot"
@@ -26,7 +27,7 @@ manage_shop_bot() {
     ui_dim "Repo: https://github.com/AliFanni-79/3XUI-Shop-Bot"
 
     local INSTALL_BOT=false
-    if [[ "$ACTION" == "install" ]]; then
+    if [[ "$ACTION" == "install" || "$ACTION" == "integrate" ]]; then
         INSTALL_BOT=true
     elif confirm INSTALL_BOT "Install 3XUI-Shop-Bot on this server?" N; then
         INSTALL_BOT=true
@@ -56,6 +57,10 @@ PY
         fi
     fi
 
+    if [[ "$ACTION" == "integrate" ]]; then
+        ui_ok "Existing bot detected at $BOT_DIR; skipping installation."
+        [[ -d "$BOT_DIR" ]] || { ui_warn "Bot directory not found; skipping the sync hook."; return 0; }
+    else
     command -v git >/dev/null 2>&1 || die "git is required to install the bot."
 
     if [[ ! -d "$BOT_DIR" ]]; then
@@ -71,6 +76,7 @@ PY
         (cd "$BOT_DIR" && bash install.sh) || ui_warn "The bot installer exited with an error."
     else
         ui_warn "install.sh not found in $BOT_DIR; please check the repository."
+    fi
     fi
 
     # Gateway integration hook: lets the bot trigger xui-sync after provisioning inbounds/users.

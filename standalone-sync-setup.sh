@@ -34,6 +34,7 @@ trap 'ui_err "Setup aborted on line $LINENO. See $XUI_LOG for details."' ERR
 
 require_root
 require_apt
+capture_old_xui_ports
 ui_banner "Standalone Gateway Sync (existing 3X-UI / Shop-Bot)"
 
 TOTAL=5
@@ -48,9 +49,7 @@ ui_step 3 $TOTAL "SSL certificate"
 configure_ssl
 
 ui_step 4 $TOTAL "Nginx pre-flight & 3X-UI settings"
-CHECK_BOT_PORT="$BOT_PUBLIC_PORT"
-[[ "$HAS_BOT" == "true" ]] || CHECK_BOT_PORT="0"
-bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT" "$CHECK_BOT_PORT"
+bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT" "$BOT_CHECK_PORT"
 
 if [[ -f "$XUI_DB" ]]; then
     # xui_manager only configures the database here (it skips installing when x-ui exists).
@@ -63,6 +62,7 @@ ui_step 5 $TOTAL "Gateway sync engine"
 write_proxy_config
 deploy_sync_engine "$SCRIPT_DIR"
 finalize_gateway
+post_install_cleanup
 
 ui_box "Standalone sync enabled" \
     "Gateway   : https://${DOMAIN}:${INBOUNDS_PORT}/" \

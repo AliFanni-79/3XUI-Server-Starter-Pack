@@ -37,6 +37,7 @@ trap 'ui_err "Installer aborted on line $LINENO. See $XUI_LOG for details."' ERR
 
 require_root
 require_apt
+capture_old_xui_ports
 ui_banner "3X-UI + Nginx Gateway + Shop-Bot Setup"
 
 TOTAL=7
@@ -55,9 +56,7 @@ configure_ssl
 
 # 4. Nginx conflict resolution
 ui_step 4 $TOTAL "Nginx pre-flight checks"
-CHECK_BOT_PORT="$BOT_PUBLIC_PORT"
-[[ "$HAS_BOT" == "true" ]] || CHECK_BOT_PORT="0"
-bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT" "$CHECK_BOT_PORT"
+bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT" "$BOT_CHECK_PORT"
 
 # 5. 3X-UI
 ui_step 5 $TOTAL "3X-UI panel"
@@ -65,7 +64,11 @@ bash "$SCRIPT_DIR/core/xui_manager.sh" "$DOMAIN" "$SUB_PUBLIC_PORT" "$PANEL_PUBL
 
 # 6. Shop-Bot (optional)
 ui_step 6 $TOTAL "Shop-Bot"
-if [[ "$HAS_BOT" == "true" ]]; then
+if [[ "$BOT_EXISTING" == "true" ]]; then
+    ui_ok "3XUI-Shop-Bot is already installed - skipping installation."
+    bash "$SCRIPT_DIR/core/bot_manager.sh" "$DOMAIN" 20830 "integrate" "$BOT_PUBLIC_PORT" "$BOT_INTERNAL_PORT" "$BOT_DIR_DETECTED" \
+        || ui_warn "Could not add the gateway sync hook to the existing bot."
+elif [[ "$HAS_BOT" == "true" ]]; then
     bash "$SCRIPT_DIR/core/bot_manager.sh" "$DOMAIN" 20830 "install" "$BOT_PUBLIC_PORT" "$BOT_INTERNAL_PORT" \
         || ui_warn "Shop-Bot installation reported a problem; the gateway will still be configured."
 else
@@ -77,13 +80,14 @@ ui_step 7 $TOTAL "Gateway sync engine"
 write_proxy_config
 deploy_sync_engine "$SCRIPT_DIR"
 finalize_gateway
+post_install_cleanup
 
 SUMMARY=(
     "Inbounds gateway : https://${DOMAIN}:${INBOUNDS_PORT}/"
     "3X-UI web panel  : https://${DOMAIN}:${PANEL_PUBLIC_PORT}/"
     "Subscription URL : https://${DOMAIN}:${SUB_PUBLIC_PORT}${SUB_PATH}"
 )
-[[ "$HAS_BOT" == "true" ]] && SUMMARY+=("Telegram bot UI  : https://${DOMAIN}:${BOT_PUBLIC_PORT}/")
+[[ "$HAS_BOT" == "true" && "$BOT_PROXY_MODE" != "skip" ]] && SUMMARY+=("Telegram bot UI  : https://${DOMAIN}:${BOT_PUBLIC_PORT}/")
 SUMMARY+=(
     "Stealth root (/) : closes connection (return 444)"
     ""
