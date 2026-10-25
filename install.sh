@@ -1,249 +1,94 @@
 #!/usr/bin/env bash
-set -e
+set -Eeuo pipefail
 
 # ==============================================================================
 # 3XUI-Server-Starter-Pack: Master Orchestrator & Installer
 # Integrates: MHSanaei 3X-UI + Nginx Path Gateway + ECH/REALITY + 3XUI-Shop-Bot
+#
+# Unattended use: pre-set answers via environment, e.g.
+#   XUI_DOMAIN=vpn.example.com XUI_HAS_BOT=n bash install.sh
 # ==============================================================================
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
-if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}Error: This installer must be run as root.${NC}"
-   exit 1
-fi
-
-# Reconnect stdin to controlling terminal if available (for interactive prompts)
-if [[ -e /dev/tty ]]; then
-    exec < /dev/tty 2>/dev/null || true
-fi
-
-prompt_read() {
-    local prompt_msg="$1"
-    local var_name="$2"
-    local default_val="$3"
-    local input_val=""
-
-    printf "%b" "$prompt_msg"
-    if [[ -e /dev/tty ]]; then
-        read -r input_val </dev/tty || true
-    else
-        read -r input_val || true
-    fi
-
-    if [[ -z "$input_val" && -n "$default_val" ]]; then
-        input_val="$default_val"
-    fi
-    eval "$var_name=\"\$input_val\""
-}
 
 REPO_URL="${XUI_GATEWAY_REPO:-https://github.com/AliFanni-79/3XUI-Server-Starter-Pack.git}"
 TARGET_DIR="/root/3XUI-Server-Starter-Pack"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 
-# Self-bootstrap if executed directly via curl / pipe
-if [[ ! -d "$SCRIPT_DIR/core" ]]; then
-    echo -e "${BLUE}[*] Bootstrapping 3XUI-Server-Starter-Pack repository...${NC}"
+# --- Self-bootstrap when executed via `curl | bash` / `bash <(curl ...)` -------
+if [[ ! -f "$SCRIPT_DIR/core/lib.sh" ]]; then
+    echo "[*] Bootstrapping 3XUI-Server-Starter-Pack repository..."
+    if [[ $EUID -ne 0 ]]; then echo "Error: This installer must be run as root." >&2; exit 1; fi
     apt-get update -y >/dev/null 2>&1 || true
     apt-get install -y git curl >/dev/null 2>&1 || true
     rm -rf "$TARGET_DIR"
-    if ! git clone -q "$REPO_URL" "$TARGET_DIR"; then
-        echo -e "${RED}[-] Failed to clone repository from ${REPO_URL}${NC}"
-        echo -e "${YELLOW}[!] If using a custom fork or branch, run: export XUI_GATEWAY_REPO=https://github.com/your/repo.git${NC}"
+    if ! git clone -q --depth 1 "$REPO_URL" "$TARGET_DIR"; then
+        echo "[-] Failed to clone repository from ${REPO_URL}" >&2
+        echo "[!] For a custom fork run: export XUI_GATEWAY_REPO=https://github.com/your/repo.git" >&2
         exit 1
     fi
-    exec < /dev/tty 2>/dev/null || true
     exec bash "$TARGET_DIR/install.sh" "$@"
 fi
 
-echo -e "${CYAN}"
-echo "=========================================================="
-echo "    __  ______  __    _   __      _            "
-echo "   / / / / __ \/ /   / | / /___ _(_)___  _  __ "
-echo "  / /_/ / / / / /   /  |/ / __ \`/ / __ \| |/_/ "
-echo " / __  / /_/ / /___/ /|  / /_/ / / / / />  <   "
-echo "/_/ /_/\____/_____/_/ |_/\__, /_/_/ /_/_/|_|   "
-echo "                        /____/                 "
-echo "        3X-UI + Nginx Gateway + Shop-Bot Setup "
-echo "=========================================================="
-echo -e "${NC}"
+# shellcheck source=core/lib.sh
+source "$SCRIPT_DIR/core/lib.sh"
+# shellcheck source=core/deploy.sh
+source "$SCRIPT_DIR/core/deploy.sh"
 
-# 1. Install System Dependencies
-echo -e "${BLUE}[*] Updating package repositories & installing dependencies...${NC}"
-apt-get update -y
-apt-get install -y nginx python3 python3-pip sqlite3 certbot python3-certbot-nginx curl git rsync
+trap 'ui_err "Installer aborted on line $LINENO. See $XUI_LOG for details."' ERR
 
-# 2. Gather Configuration
-echo ""
-echo -e "${YELLOW}--- Gateway Network Configuration ---${NC}"
-prompt_read "Enter your Domain Name (e.g. vpn.example.com): " DOMAIN
-while [[ -z "$DOMAIN" ]]; do
-    echo -e "${RED}Domain name cannot be empty.${NC}"
-    prompt_read "Enter your Domain Name: " DOMAIN
-done
+require_root
+require_apt
+ui_banner "3X-UI + Nginx Gateway + Shop-Bot Setup"
 
-prompt_read "Enter Inbounds Public Gateway Port [default: 443]: " INBOUNDS_PORT "443"
-prompt_read "Enter 3X-UI Web Panel Public Port [default: 2083]: " PANEL_PUBLIC_PORT "2083"
-prompt_read "Enter 3X-UI Subscription Public Port [default: 2096]: " SUB_PUBLIC_PORT "2096"
-prompt_read "Enter 3X-UI Subscription URL Root Path [default: /sub/]: " SUB_PATH "/sub/"
-[[ "$SUB_PATH" != /* ]] && SUB_PATH="/$SUB_PATH"
-[[ "$SUB_PATH" != */ ]] && SUB_PATH="$SUB_PATH/"
+TOTAL=7
 
-echo ""
-prompt_read "Do you want to install 3XUI-Shop-Bot on this server? (y/N): " INSTALL_BOT_CHOICE "N"
-if [[ "$INSTALL_BOT_CHOICE" =~ ^[Yy]$ ]]; then
-    INSTALL_BOT="true"
-    prompt_read "Enter Telegram Bot WebUI Public Port [default: 8443]: " BOT_PUBLIC_PORT "8443"
-    prompt_read "Enter Telegram Bot Local Port [default: 8080]: " BOT_INTERNAL_PORT "8080"
-else
-    INSTALL_BOT="false"
-    BOT_PUBLIC_PORT="8443"
-    BOT_INTERNAL_PORT="8080"
-fi
+# 1. Dependencies
+ui_step 1 $TOTAL "System dependencies"
+install_dependencies
 
-# 3. SSL Certificate Setup
-echo ""
-echo -e "${YELLOW}--- SSL Certificate Configuration ---${NC}"
-DEFAULT_LE_CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
-DEFAULT_LE_KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
-CUSTOM_ROOT_CERT="/root/cert/${DOMAIN}/fullchain.pem"
-CUSTOM_ROOT_KEY="/root/cert/${DOMAIN}/privkey.pem"
+# 2. Configuration
+ui_step 2 $TOTAL "Configuration"
+collect_gateway_config "Install 3XUI-Shop-Bot on this server?"
 
-SSL_CERT=""
-SSL_KEY=""
+# 3. SSL
+ui_step 3 $TOTAL "SSL certificate"
+configure_ssl
 
-if [[ -f "$CUSTOM_ROOT_CERT" && -f "$CUSTOM_ROOT_KEY" ]]; then
-    SSL_CERT="$CUSTOM_ROOT_CERT"
-    SSL_KEY="$CUSTOM_ROOT_KEY"
-    echo -e "${GREEN}[+] Detected SSL certificate in /root/cert/${DOMAIN}.${NC}"
-elif [[ -f "$DEFAULT_LE_CERT" && -f "$DEFAULT_LE_KEY" ]]; then
-    SSL_CERT="$DEFAULT_LE_CERT"
-    SSL_KEY="$DEFAULT_LE_KEY"
-    echo -e "${GREEN}[+] Detected Let's Encrypt certificate in /etc/letsencrypt/live/${DOMAIN}.${NC}"
-else
-    echo "No existing certificate found for $DOMAIN."
-    prompt_read "Issue a free Let's Encrypt SSL certificate automatically now? (y/N): " ISSUE_SSL "N"
-    if [[ "$ISSUE_SSL" =~ ^[Yy]$ ]]; then
-        systemctl stop nginx 2>/dev/null || true
-        certbot certonly --standalone -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email
-        SSL_CERT="$DEFAULT_LE_CERT"
-        SSL_KEY="$DEFAULT_LE_KEY"
-        systemctl start nginx 2>/dev/null || true
-    else
-        prompt_read "Enter full path to your fullchain.pem: " SSL_CERT
-        prompt_read "Enter full path to your privkey.pem: " SSL_KEY
-    fi
-fi
-
-# 4. Resolve Preconfigured Nginx Conflicts & Pre-checks
-chmod +x "$SCRIPT_DIR/core/nginx_manager.sh"
+# 4. Nginx conflict resolution
+ui_step 4 $TOTAL "Nginx pre-flight checks"
 CHECK_BOT_PORT="$BOT_PUBLIC_PORT"
-if [[ "$INSTALL_BOT" != "true" ]]; then
-    CHECK_BOT_PORT="0"
-fi
+[[ "$HAS_BOT" == "true" ]] || CHECK_BOT_PORT="0"
 bash "$SCRIPT_DIR/core/nginx_manager.sh" "$DOMAIN" "$INBOUNDS_PORT" "$PANEL_PUBLIC_PORT" "$SUB_PUBLIC_PORT" "$CHECK_BOT_PORT"
 
-# 5. Install / Verify 3X-UI Panel
-chmod +x "$SCRIPT_DIR/core/xui_manager.sh"
+# 5. 3X-UI
+ui_step 5 $TOTAL "3X-UI panel"
 bash "$SCRIPT_DIR/core/xui_manager.sh" "$DOMAIN" "$SUB_PUBLIC_PORT" "$PANEL_PUBLIC_PORT" 20830 20960
 
-# 6. Install / Integrate 3XUI-Shop-Bot (Optional)
-if [[ "$INSTALL_BOT" == "true" ]]; then
-    chmod +x "$SCRIPT_DIR/core/bot_manager.sh"
-    bash "$SCRIPT_DIR/core/bot_manager.sh" "$DOMAIN" 20830 "install"
+# 6. Shop-Bot (optional)
+ui_step 6 $TOTAL "Shop-Bot"
+if [[ "$HAS_BOT" == "true" ]]; then
+    bash "$SCRIPT_DIR/core/bot_manager.sh" "$DOMAIN" 20830 "install" "$BOT_PUBLIC_PORT" "$BOT_INTERNAL_PORT" \
+        || ui_warn "Shop-Bot installation reported a problem; the gateway will still be configured."
 else
-    echo ""
-    echo -e "${BLUE}[*] Skipping 3XUI-Shop-Bot installation.${NC}"
+    ui_info "Skipping 3XUI-Shop-Bot installation."
 fi
 
-# 7. Deploy Nginx Gateway Sync Engine
-echo -e "${BLUE}[*] Deploying synchronization engine and systemd watcher...${NC}"
-mkdir -p /etc/x-ui
-python3 -c "
-import json, os
-path = '/etc/x-ui/nginx_proxy.json'
-data = {}
-if os.path.isfile(path):
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except Exception:
-        pass
-data.update({
-    'domain': '${DOMAIN}',
-    'ssl_cert': '${SSL_CERT}',
-    'ssl_key': '${SSL_KEY}',
-    'inbounds_port': int('${INBOUNDS_PORT}'),
-    'panel_public_port': int('${PANEL_PUBLIC_PORT}'),
-    'panel_internal_port': 20830,
-    'sub_public_port': int('${SUB_PUBLIC_PORT}'),
-    'sub_internal_port': 20960,
-    'bot_public_port': int('${BOT_PUBLIC_PORT}'),
-    'bot_internal_port': int('${BOT_INTERNAL_PORT}'),
-    'skip_bot_proxy': ('${INSTALL_BOT}' != 'true'),
-    'sub_path': '${SUB_PATH}',
-    'db_path': '/etc/x-ui/x-ui.db',
-    'nginx_conf_path': '/etc/nginx/conf.d/xui_proxy.conf'
-})
-data.setdefault('root_location_rule', 'return 444;')
-data.setdefault('skip_panel_proxy', False)
-data.setdefault('skip_sub_proxy', False)
-data.setdefault('skip_inbound_ids', [])
-with open(path, 'w', encoding='utf-8') as f:
-    json.dump(data, f, indent=2)
-"
+# 7. Sync engine + start
+ui_step 7 $TOTAL "Gateway sync engine"
+write_proxy_config
+deploy_sync_engine "$SCRIPT_DIR"
+finalize_gateway
 
-# Install sync script
-cp "$SCRIPT_DIR/core/sync_engine.py" /usr/local/bin/xui-nginx-sync.py
-chmod +x /usr/local/bin/xui-nginx-sync.py
+SUMMARY=(
+    "Inbounds gateway : https://${DOMAIN}:${INBOUNDS_PORT}/"
+    "3X-UI web panel  : https://${DOMAIN}:${PANEL_PUBLIC_PORT}/"
+    "Subscription URL : https://${DOMAIN}:${SUB_PUBLIC_PORT}${SUB_PATH}"
+)
+[[ "$HAS_BOT" == "true" ]] && SUMMARY+=("Telegram bot UI  : https://${DOMAIN}:${BOT_PUBLIC_PORT}/")
+SUMMARY+=(
+    "Stealth root (/) : closes connection (return 444)"
+    ""
+    "Manage with      : xui-sync status | doctor | hosts | log"
+)
+ui_box "Installation complete" "${SUMMARY[@]}"
 
-# Install CLI tool
-cp "$SCRIPT_DIR/bin/xui-sync" /usr/local/bin/xui-sync
-chmod +x /usr/local/bin/xui-sync
-
-# Install systemd path and service
-cp "$SCRIPT_DIR/systemd/xui-nginx-sync.service" /etc/systemd/system/
-cp "$SCRIPT_DIR/systemd/xui-nginx-sync.path" /etc/systemd/system/
-
-systemctl daemon-reload
-systemctl enable --now xui-nginx-sync.path
-
-# 8. Run Initial Sync & Restart Nginx
-echo -e "${BLUE}[*] Running initial synchronization...${NC}"
-/usr/local/bin/xui-sync
-
-systemctl enable nginx
-systemctl restart nginx
-
-echo ""
-echo -e "${GREEN}==========================================================${NC}"
-echo -e "${GREEN}     3XUI-SERVER-STARTER-PACK INSTALLATION COMPLETED!     ${NC}"
-echo -e "${GREEN}==========================================================${NC}"
-echo " - Inbounds Gateway   : https://${DOMAIN}:${INBOUNDS_PORT}/"
-echo " - 3X-UI Web Panel    : https://${DOMAIN}:${PANEL_PUBLIC_PORT}/ (Direct proxy, no leak)"
-echo " - Subscription URL   : https://${DOMAIN}:${SUB_PUBLIC_PORT}${SUB_PATH}"
-if [[ "$INSTALL_BOT" == "true" ]]; then
-    echo " - Telegram Bot WebUI : https://${DOMAIN}:${BOT_PUBLIC_PORT}/"
-fi
-echo " - Stealth Root (/)   : https://${DOMAIN}/ (Closes connection instantly with return 444)"
-echo ""
-echo "CLI Management Tool   : xui-sync (Run 'xui-sync help' for options)"
-echo "=========================================================="
-echo ""
-
-prompt_read "Would you like to support this project and star it on GitHub? (y/N): " STAR_CHOICE "N"
-if [[ "$STAR_CHOICE" =~ ^[Yy]$ ]]; then
-    GITHUB_URL="https://github.com/AliFanni-79/3XUI-Server-Starter-Pack"
-    echo ""
-    echo -e "${YELLOW}⭐ Thank you so much for your support!${NC}"
-    echo -e "👉 Opening ${CYAN}${GITHUB_URL}${NC} ..."
-    python3 -m webbrowser "$GITHUB_URL" >/dev/null 2>&1 || xdg-open "$GITHUB_URL" >/dev/null 2>&1 || sensible-browser "$GITHUB_URL" >/dev/null 2>&1 || true
-    echo -e "If the browser did not open automatically, visit:"
-    echo -e "   \e]8;;${GITHUB_URL}\e\\${CYAN}${GITHUB_URL}\e]8;;\e\\"
-    echo ""
-fi
+offer_github_star

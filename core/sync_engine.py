@@ -1,18 +1,27 @@
 import os
+import re
 import sys
 import json
 import sqlite3
 import subprocess
 import shutil
+import tempfile
 import time
 import logging
 
+try:  # POSIX only; the engine itself only ever runs on Linux
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
+
 CONFIG_FILE = "/etc/x-ui/nginx_proxy.json"
-STATE_FILE = "/tmp/xui_sync.lock"
+LOCK_FILE = os.path.join("/run" if os.access("/run", os.W_OK) else tempfile.gettempdir(), "xui-sync.lock")
+DEBOUNCE_SECONDS = 5
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 
@@ -20,8 +29,16 @@ def load_config():
     if not os.path.exists(CONFIG_FILE):
         logging.error(f"Configuration file {CONFIG_FILE} not found.")
         sys.exit(1)
-    with open(CONFIG_FILE, "r") as f:
-        conf = json.load(f)
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            conf = json.load(f)
+    except (OSError, ValueError) as e:
+        logging.error(f"Configuration file {CONFIG_FILE} is unreadable or invalid: {e}")
+        sys.exit(1)
+    for key in ("domain", "ssl_cert", "ssl_key"):
+        if not str(conf.get(key, "")).strip():
+            logging.error(f"Configuration is missing required key '{key}'. Re-run the installer.")
+            sys.exit(1)
     conf.setdefault("panel_internal_port", 20830)
     conf.setdefault("sub_internal_port", 20960)
     conf.setdefault("bot_internal_port", 8080)
@@ -114,38 +131,74 @@ def extract_inbound_sni(stream_dict, default_domain=""):
 
     return default_domain
 
-def sync():
+def safe_int(value, default):
+    """Convert a settings value to int, falling back to a default."""
+    try:
+        return int(str(value).strip())
+    except (ValueError, TypeError):
+        return default
+
+def set_setting(cursor, settings, key, value):
+    """Upsert a 3X-UI setting (the table has no UNIQUE(key)). Returns True if changed."""
+    value = str(value)
+    if settings.get(key) == value:
+        return False
+    cursor.execute("UPDATE settings SET value = ? WHERE key = ?", (value, key))
+    if cursor.rowcount == 0:
+        cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (key, value))
+    settings[key] = value
+    return True
+
+def sync(force=False):
+    """Serialise runs with a file lock and coalesce bursts of DB writes.
+
+    A run that starts inside the debounce window waits for the remainder
+    instead of being dropped, so a change made right after a previous run is
+    never lost.
+    """
     conf = load_config()
+    lock_fh = open(LOCK_FILE, "a+")
+    try:
+        if fcntl:
+            fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        if not force:
+            lock_fh.seek(0)
+            try:
+                last = float(lock_fh.read().strip() or 0)
+            except ValueError:
+                last = 0.0
+            wait = DEBOUNCE_SECONDS - (time.time() - last)
+            if wait > 0:
+                logging.info(f"Debounce: waiting {wait:.1f}s for pending writes to settle.")
+                time.sleep(wait)
+        try:
+            _sync_locked(conf)
+        finally:
+            lock_fh.seek(0)
+            lock_fh.truncate()
+            lock_fh.write(str(time.time()))
+            lock_fh.flush()
+    finally:
+        lock_fh.close()
+
+def _sync_locked(conf):
     db_path = conf.get("db_path", "/etc/x-ui/x-ui.db")
 
     if not os.path.exists(db_path):
         logging.error(f"Database {db_path} does not exist. Please ensure 3X-UI is installed.")
         return
 
-    # Debounce (5 seconds cooldown to prevent rapid trigger loops)
-    now = time.time()
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r") as f:
-                if now - float(f.read().strip()) < 5:
-                    logging.info("Skipped: Ran within 5s debounce window.")
-                    return
-        except Exception:
-            pass
-
-    with open(STATE_FILE, "w") as f:
-        f.write(str(now))
-
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     cursor = conn.cursor()
     db_modified = False
+    restart_xui = False
 
     # 1. Read Panel & Sub settings from 3X-UI
     cursor.execute("SELECT key, value FROM settings")
-    settings = dict(cursor.fetchall())
+    settings = {k: (v if v is not None else "") for k, v in cursor.fetchall()}
 
-    web_port = int(settings.get("webPort", conf["panel_internal_port"]))
-    sub_port = int(settings.get("subPort", conf["sub_internal_port"])) if "subPort" in settings else conf["sub_internal_port"]
+    web_port = safe_int(settings.get("webPort"), conf["panel_internal_port"])
+    sub_port = safe_int(settings.get("subPort"), conf["sub_internal_port"])
     web_cert = settings.get("webCertFile", "").strip()
     sub_cert = settings.get("subCertFile", "").strip()
 
@@ -161,14 +214,18 @@ def sync():
     if sub_path and not sub_path.endswith("/"):
         sub_path = sub_path + "/"
 
-    # Configure Reverse Proxy settings in 3X-UI settings table for subscription generation
-    if settings.get("subDomain") != conf["domain"]:
-        cursor.execute("UPDATE settings SET value = ? WHERE key = 'subDomain'", (conf["domain"],))
+    # Subscription links must point at the public gateway. The internal subPort is
+    # NOT overwritten with the public port (that made the engine flip-flop on every
+    # run); instead the public URL is advertised through subDomain/subURI.
+    if set_setting(cursor, settings, "subDomain", conf["domain"]):
         db_modified = True
 
-    if settings.get("subPort") != str(conf["sub_public_port"]):
-        cursor.execute("UPDATE settings SET value = ? WHERE key = 'subPort'", (str(conf["sub_public_port"]),))
-        db_modified = True
+    if "subURI" in settings:
+        current_uri = settings["subURI"].strip()
+        if not current_uri or current_uri.startswith(f"https://{conf['domain']}"):
+            desired_uri = f"https://{conf['domain']}:{conf['sub_public_port']}{sub_path or '/sub/'}"
+            if set_setting(cursor, settings, "subURI", desired_uri):
+                db_modified = True
 
     panel_proto = "https" if web_cert else "http"
     sub_proto = "https" if sub_cert else "http"
@@ -182,17 +239,21 @@ def sync():
         80
     ]
 
+    # Moving the panel/sub listener only takes effect after x-ui restarts; without
+    # the restart Nginx would proxy to a port nothing listens on (502).
     panel_internal_port = conf["panel_internal_port"]
     if web_port in reserved_public:
-        cursor.execute("UPDATE settings SET value = ? WHERE key = 'webPort'", (str(panel_internal_port),))
+        set_setting(cursor, settings, "webPort", panel_internal_port)
         web_port = panel_internal_port
         db_modified = True
+        restart_xui = True
 
     sub_internal_port = conf["sub_internal_port"]
     if sub_port in reserved_public:
-        cursor.execute("UPDATE settings SET value = ? WHERE key = 'subPort'", (str(sub_internal_port),))
+        set_setting(cursor, settings, "subPort", sub_internal_port)
         sub_port = sub_internal_port
         db_modified = True
+        restart_xui = True
 
     # 2. Inspect Inbounds
     cursor.execute("PRAGMA table_info(inbounds)")
@@ -291,7 +352,9 @@ def sync():
         net_key = f"{network}Settings" if network != "httpupgrade" else "httpupgradeSettings"
         path_key = "serviceName" if network == "grpc" else "path"
         net_settings = stream.get(net_key, {})
-        current_path = net_settings.get(path_key, "").strip()
+        if not isinstance(net_settings, dict):
+            net_settings = {}
+        current_path = str(net_settings.get(path_key) or "").strip()
 
         if network == "grpc":
             if not current_path or current_path in seen_paths:
@@ -308,6 +371,11 @@ def sync():
                 net_settings[path_key] = new_path
                 stream[net_key] = net_settings
                 current_path = new_path
+                inbound_updated = True
+            elif net_settings.get(path_key) != current_path:
+                # Persist the normalized leading slash so Xray and Nginx agree on the path.
+                net_settings[path_key] = current_path
+                stream[net_key] = net_settings
                 inbound_updated = True
 
         seen_paths.add(current_path.rstrip("/"))
@@ -561,7 +629,11 @@ def sync():
         logging.info("Database inbounds and hosts are up to date.")
     conn.close()
 
-    # 4. Generate Nginx Config (Zero downtime - never restarts x-ui)
+    if restart_xui and shutil.which("systemctl"):
+        logging.info("Internal panel/subscription port changed; restarting x-ui to apply.")
+        subprocess.run(["systemctl", "restart", "x-ui"], check=False)
+
+    # 4. Generate Nginx Config (x-ui is only restarted above when its own listener moved)
     generate_nginx_config(conf, proxied_http_inbounds, web_port, panel_proto, web_base_path, sub_port, sub_proto, sub_path)
 
 def generate_nginx_config(conf, inbounds, panel_port, panel_proto, web_base_path, sub_port, sub_proto, sub_path):
@@ -768,27 +840,61 @@ def generate_nginx_config(conf, inbounds, panel_port, panel_proto, web_base_path
     conf_content = "\n".join([line for line in lines if line is not None])
     conf_path = conf.get("nginx_conf_path", "/etc/nginx/conf.d/xui_proxy.conf")
 
-    # Check for diffs before writing
+    # The standalone "http2 on;" directive needs nginx >= 1.25.1; older versions
+    # expect "listen ... ssl http2;".
+    if not nginx_supports_http2_directive():
+        conf_content = re.sub(r"(listen [^;\n]*\bssl)(;)", r"\1 http2\2", conf_content)
+        conf_content = re.sub(r"^[ \t]*http2 on;\n", "", conf_content, flags=re.MULTILINE)
+
+    previous = None
     if os.path.exists(conf_path):
         with open(conf_path, "r") as f:
-            existing = f.read()
-        if existing.strip() == conf_content.strip():
+            previous = f.read()
+        # Check for diffs before writing
+        if previous.strip() == conf_content.strip():
             logging.info("Nginx configuration is already identical. No reload needed.")
             return
 
-    with open(conf_path, "w") as f:
-        f.write(conf_content)
+    os.makedirs(os.path.dirname(conf_path), exist_ok=True)
+    tmp_path = conf_path + ".tmp"
+    with open(tmp_path, "w") as f:
+        f.write(conf_content if conf_content.endswith("\n") else conf_content + "\n")
+    os.replace(tmp_path, conf_path)
 
-    if shutil.which("nginx"):
-        test = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
-        if test.returncode == 0:
-            if shutil.which("systemctl"):
-                subprocess.run(["systemctl", "reload", "nginx"], check=False)
-            logging.info("Nginx configuration updated and reloaded successfully.")
-        else:
-            logging.error(f"Nginx config validation failed:\n{test.stderr}")
-    else:
+    if not shutil.which("nginx"):
         logging.info(f"Nginx configuration written to {conf_path} (nginx binary not in PATH).")
+        return
+
+    test = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
+    if test.returncode == 0:
+        if shutil.which("systemctl"):
+            subprocess.run(["systemctl", "reload", "nginx"], check=False)
+        logging.info("Nginx configuration updated and reloaded successfully.")
+        return
+
+    # Never leave an invalid file behind: a later nginx restart/boot would fail.
+    logging.error(f"Nginx config validation failed:\n{test.stderr}")
+    if previous is not None:
+        with open(conf_path, "w") as f:
+            f.write(previous)
+        logging.error("Previous working configuration has been restored.")
+    else:
+        os.remove(conf_path)
+        logging.error("The invalid generated configuration was removed.")
+    sys.exit(1)
+
+def nginx_supports_http2_directive():
+    """True when nginx is >= 1.25.1 (or its version cannot be determined)."""
+    if not shutil.which("nginx"):
+        return True
+    try:
+        out = subprocess.run(["nginx", "-v"], capture_output=True, text=True).stderr
+        m = re.search(r"nginx/(\d+)\.(\d+)\.(\d+)", out)
+        if m:
+            return tuple(int(x) for x in m.groups()) >= (1, 25, 1)
+    except Exception:
+        pass
+    return True
 
 if __name__ == "__main__":
-    sync()
+    sync(force="--force" in sys.argv[1:])

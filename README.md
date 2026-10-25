@@ -132,21 +132,38 @@ chmod +x standalone-sync-setup.sh
 A lightweight CLI tool is installed to `/usr/local/bin/xui-sync`:
 
 ```bash
-# Run manual synchronization
+# Run manual synchronization (always bypasses the debounce window)
 xui-sync
 
-# Check status of Nginx, 3X-UI, Shop-Bot, and listening ports
+# Dashboard: services, public endpoints and listening ports
 xui-sync status
+
+# Health checks: config, certificate expiry, WAL mode, services, nginx -t, ports
+xui-sync doctor
 
 # Inspect active 3X-UI Hosts table (addresses, ports, ECH, SNI)
 xui-sync hosts
 
-# Force Nginx configuration test & reload
+# Print the gateway configuration
+xui-sync config
+
+# Force synchronization & Nginx reload
 xui-sync reload
 
 # Follow live logs of background database watcher
 xui-sync log
 ```
+
+### Unattended installation
+
+Every prompt can be pre-answered with an `XUI_<NAME>` environment variable, which also makes the installers usable without a terminal:
+
+```bash
+XUI_DOMAIN=vpn.example.com XUI_INBOUNDS_PORT=443 XUI_HAS_BOT=n \
+XUI_ISSUE=y bash install.sh
+```
+
+Variables: `XUI_DOMAIN`, `XUI_INBOUNDS_PORT`, `XUI_PANEL_PUBLIC_PORT`, `XUI_SUB_PUBLIC_PORT`, `XUI_SUB_PATH`, `XUI_HAS_BOT`, `XUI_BOT_PUBLIC_PORT`, `XUI_BOT_INTERNAL_PORT`, `XUI_ISSUE` (Let's Encrypt), `XUI_SSL_CERT`, `XUI_SSL_KEY`, `XUI_NGINX_CHOICE` (1-3). Set `NO_COLOR=1` for plain output. Long-running command output is logged to `/var/log/xui-starter-pack.log`.
 
 ---
 
@@ -157,6 +174,8 @@ xui-sync log
 ├── install.sh                  # Interactive master installer & orchestrator
 ├── standalone-sync-setup.sh    # Standalone gateway installer for existing servers
 ├── core/
+│   ├── lib.sh                  # Shared UI (banner, steps, boxes, spinner) & validated prompts
+│   ├── deploy.sh               # Install steps shared by both installers
 │   ├── sync_engine.py          # Unified Python sync engine (ECH, REALITY, Hosts, Inbounds, Nginx)
 │   ├── nginx_inspector.py      # Pre-configuration detector & granular (domain, port, path) resolver
 │   ├── nginx_manager.sh        # Nginx conflict resolver wrapper

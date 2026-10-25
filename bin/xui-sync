@@ -1,87 +1,213 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# xui-sync: Lightweight CLI Controller for 3X-UI, Nginx Gateway & Shop Bot
+# xui-sync: CLI controller for the 3X-UI / Nginx gateway / Shop-Bot stack
 # ==============================================================================
+set -uo pipefail
 
+VERSION="2.0"
 SYNC_SCRIPT="/usr/local/bin/xui-nginx-sync.py"
+CONF="/etc/x-ui/nginx_proxy.json"
 DB_PATH="/etc/x-ui/x-ui.db"
+LIB="/usr/local/lib/xui-starter-pack/lib.sh"
+
+if [[ -r "$LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$LIB"
+else
+    # Minimal fallbacks so the CLI still works if the shared library is missing.
+    C_RESET=''; C_BOLD=''; C_GRAY=''; C_CYAN=''; C_GREEN=''; C_RED=''; C_YELLOW=''
+    G_DOT='*'; G_OFF='-'; G_OK='+'; G_ERR='x'
+    ui_ok()   { echo "  + $*"; }
+    ui_err()  { echo "  x $*" >&2; }
+    ui_warn() { echo "  ! $*" >&2; }
+    ui_info() { echo "  * $*"; }
+    ui_dim()  { echo "    $*"; }
+    ui_kv()   { printf '  %-20s %s\n' "$1" "$2"; }
+    ui_section() { printf '\n== %s ==\n' "$1"; }
+    ui_banner() { echo; echo "  xui-sync"; echo; }
+fi
+
+# Read a key from the JSON config (prints empty string if unavailable).
+cfg() {
+    [[ -r "$CONF" ]] || return 0
+    python3 - "$CONF" "$1" <<'PY' 2>/dev/null
+import json, sys
+try:
+    v = json.load(open(sys.argv[1])).get(sys.argv[2], "")
+except Exception:
+    v = ""
+print(v if v is not None else "")
+PY
+}
+
+need_root() {
+    [[ $EUID -eq 0 ]] || { ui_err "This command needs root. Try: sudo xui-sync $*"; exit 1; }
+}
+
+svc_line() { # svc_line LABEL UNIT
+    local label="$1" unit="$2" state
+    state="$(systemctl is-active "$unit" 2>/dev/null)"
+    case "$state" in
+        active)   printf '  %s%s%s %-22s %s%s%s\n' "$C_GREEN" "$G_DOT" "$C_RESET" "$label" "$C_GREEN" "$state" "$C_RESET" ;;
+        inactive|"") printf '  %s%s%s %-22s %s%s%s\n' "$C_GRAY" "$G_OFF" "$C_RESET" "$label" "$C_GRAY" "${state:-not installed}" "$C_RESET" ;;
+        *)        printf '  %s%s%s %-22s %s%s%s\n' "$C_RED" "$G_DOT" "$C_RESET" "$label" "$C_RED" "$state" "$C_RESET" ;;
+    esac
+}
 
 show_help() {
-    echo "=========================================================="
-    echo "                  xui-sync Control Utility                "
-    echo "=========================================================="
-    echo "Usage: xui-sync [command]"
-    echo ""
-    echo "Commands:"
-    echo "  (no args)    Run database & Nginx synchronization engine"
-    echo "  status       Check status of Nginx, 3X-UI, Bot and open ports"
-    echo "  hosts        View active Hosts table from 3X-UI database"
-    echo "  reload       Force synchronization and reload Nginx"
-    echo "  log          View live logs of the auto-sync background watcher"
-    echo "  help         Display this help message"
-    echo "=========================================================="
+    ui_banner "xui-sync ${VERSION} - gateway control utility"
+    cat <<EOF
+  ${C_BOLD}Usage:${C_RESET} xui-sync [command]
+
+  ${C_CYAN}status${C_RESET}         Dashboard: services, endpoints and listening ports
+  ${C_CYAN}doctor${C_RESET}         Run health checks (nginx config, certificate, database, ports)
+  ${C_CYAN}hosts${C_RESET}          Show the Hosts table from the 3X-UI database
+  ${C_CYAN}config${C_RESET}         Print the gateway configuration (${CONF})
+  ${C_CYAN}sync${C_RESET} [--force] Run the synchronization engine (default when no command given)
+  ${C_CYAN}reload${C_RESET}         Force a synchronization and reload nginx
+  ${C_CYAN}log${C_RESET}            Follow the auto-sync watcher logs
+  ${C_CYAN}version${C_RESET}        Print version
+  ${C_CYAN}help${C_RESET}           Show this help
+
+EOF
 }
 
 cmd_sync() {
-    if [[ ! -f "$SYNC_SCRIPT" ]]; then
-        echo "Error: $SYNC_SCRIPT not found. Please run install.sh first."
-        exit 1
-    fi
-    python3 "$SYNC_SCRIPT"
+    need_root sync
+    [[ -f "$SYNC_SCRIPT" ]] || { ui_err "$SYNC_SCRIPT not found. Please run install.sh first."; exit 1; }
+    # Manual runs always bypass the debounce window.
+    python3 "$SYNC_SCRIPT" --force
 }
 
 cmd_status() {
-    echo "--- Service Status ---"
-    systemctl status nginx --no-pager -l | head -n 5 || true
-    echo ""
-    systemctl status x-ui --no-pager -l | head -n 5 || true
-    echo ""
-    systemctl status xui-nginx-sync.path --no-pager -l | head -n 5 || true
-    echo ""
-    if systemctl is-active --quiet xui-bot.service; then
-        systemctl status xui-bot.service --no-pager -l | head -n 5 || true
+    ui_banner "Gateway status"
+    ui_section "Services"
+    svc_line "nginx"                 nginx
+    svc_line "3X-UI panel"           x-ui
+    svc_line "auto-sync watcher"     xui-nginx-sync.path
+    systemctl list-unit-files xui-bot.service >/dev/null 2>&1 \
+        && systemctl cat xui-bot.service >/dev/null 2>&1 && svc_line "shop bot" xui-bot.service
+
+    local domain
+    domain="$(cfg domain)"
+    if [[ -n "$domain" ]]; then
+        ui_section "Endpoints"
+        ui_kv "Inbounds gateway" "https://${domain}:$(cfg inbounds_port)/"
+        [[ "$(cfg skip_panel_proxy)" == "True" ]] || ui_kv "Web panel"  "https://${domain}:$(cfg panel_public_port)/"
+        [[ "$(cfg skip_sub_proxy)"   == "True" ]] || ui_kv "Subscription" "https://${domain}:$(cfg sub_public_port)$(cfg sub_path)"
+        [[ "$(cfg skip_bot_proxy)"   == "True" ]] || ui_kv "Shop bot UI" "https://${domain}:$(cfg bot_public_port)/"
+    else
+        ui_warn "No gateway configuration found at $CONF"
     fi
-    echo ""
-    echo "--- Active Listening Ports ---"
-    ss -tulpn | grep -E 'x-ui|nginx|python3' || true
+
+    ui_section "Listening ports"
+    if command -v ss >/dev/null 2>&1; then
+        printf '  %s%-8s %-26s %s%s\n' "$C_GRAY" "PROTO" "ADDRESS" "PROCESS" "$C_RESET"
+        ss -H -tlnp 2>/dev/null | grep -E 'x-ui|nginx|xray|python3' \
+            | awk '{ proc=$NF; sub(/^users:\(\("/,"",proc); sub(/".*/,"",proc); printf "  %-8s %-26s %s\n", "tcp", $4, proc }' | sort -u
+    else
+        ui_dim "ss not available"
+    fi
+    echo
+}
+
+cmd_doctor() {
+    local pass=0 fail=0 warn=0
+    ok()   { ui_ok "$1"; pass=$((pass+1)); }
+    bad()  { ui_err "$1"; fail=$((fail+1)); }
+    meh()  { ui_warn "$1"; warn=$((warn+1)); }
+
+    ui_banner "Gateway doctor"
+
+    ui_section "Configuration"
+    if [[ -r "$CONF" ]] && python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$CONF" 2>/dev/null; then
+        ok "Config file is valid JSON ($CONF)"
+    else
+        bad "Config file missing or invalid: $CONF"
+    fi
+    local cert key domain
+    cert="$(cfg ssl_cert)"; key="$(cfg ssl_key)"; domain="$(cfg domain)"
+    [[ -n "$domain" ]] && ok "Domain: $domain" || bad "No domain configured"
+
+    ui_section "Certificate"
+    if [[ -n "$cert" && -r "$cert" && -n "$key" && -r "$key" ]]; then
+        ok "Certificate and key are readable"
+        if command -v openssl >/dev/null 2>&1; then
+            if openssl x509 -checkend 0 -noout -in "$cert" >/dev/null 2>&1; then
+                if openssl x509 -checkend $((14*86400)) -noout -in "$cert" >/dev/null 2>&1; then
+                    ok "Certificate valid ($(openssl x509 -enddate -noout -in "$cert" | cut -d= -f2))"
+                else
+                    meh "Certificate expires within 14 days ($(openssl x509 -enddate -noout -in "$cert" | cut -d= -f2))"
+                fi
+            else
+                bad "Certificate has EXPIRED"
+            fi
+        fi
+    else
+        bad "Certificate/key not found or unreadable (${cert:-unset})"
+    fi
+
+    ui_section "3X-UI database"
+    if [[ -r "$DB_PATH" ]]; then
+        ok "Database found ($DB_PATH)"
+        local mode
+        mode="$(sqlite3 "$DB_PATH" 'PRAGMA journal_mode;' 2>/dev/null)"
+        [[ "$mode" == "wal" ]] && ok "SQLite journal mode: WAL" || meh "SQLite journal mode is '${mode:-unknown}' (expected wal)"
+    else
+        bad "Database not readable: $DB_PATH"
+    fi
+
+    ui_section "Services & nginx"
+    local u
+    for u in nginx x-ui xui-nginx-sync.path; do
+        systemctl is-active --quiet "$u" 2>/dev/null && ok "$u is active" || bad "$u is not active"
+    done
+    if command -v nginx >/dev/null 2>&1; then
+        if nginx -t >/dev/null 2>&1; then ok "nginx -t passes"; else bad "nginx -t fails (run: nginx -t)"; fi
+    fi
+
+    ui_section "Ports"
+    local p name
+    for name in inbounds_port panel_public_port sub_public_port; do
+        p="$(cfg "$name")"
+        [[ -z "$p" ]] && continue
+        if ss -H -tln 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${p}\$"; then ok "Port $p ($name) is listening"
+        else bad "Port $p ($name) is NOT listening"; fi
+    done
+
+    echo
+    printf '  %sSummary:%s %s%d passed%s, %s%d warning(s)%s, %s%d failed%s\n\n' "$C_BOLD" "$C_RESET" \
+        "$C_GREEN" "$pass" "$C_RESET" "$C_YELLOW" "$warn" "$C_RESET" "$C_RED" "$fail" "$C_RESET"
+    [[ $fail -eq 0 ]]
 }
 
 cmd_hosts() {
-    if [[ ! -f "$DB_PATH" ]]; then
-        echo "Error: Database $DB_PATH not found."
-        exit 1
-    fi
-    echo "=== 3X-UI Hosts Table ==="
-    sqlite3 "$DB_PATH" -header -column "SELECT id, inbound_id, remark, address, port, security, sni, host_header, path, ech_config_list FROM hosts;" 2>/dev/null || echo "Hosts table is empty or not yet migrated."
+    [[ -f "$DB_PATH" ]] || { ui_err "Database $DB_PATH not found."; exit 1; }
+    ui_section "3X-UI hosts"
+    sqlite3 "$DB_PATH" -header -column \
+        "SELECT id, inbound_id, remark, address, port, security, sni, host_header, path, ech_config_list FROM hosts;" 2>/dev/null \
+        || ui_warn "Hosts table is empty or not yet migrated."
+}
+
+cmd_config() {
+    [[ -r "$CONF" ]] || { ui_err "No config at $CONF"; exit 1; }
+    ui_section "Gateway configuration"
+    python3 -m json.tool "$CONF"
 }
 
 cmd_log() {
     journalctl -u xui-nginx-sync.service -n 30 --no-pager -f
 }
 
-case "$1" in
-    ""|"run")
-        cmd_sync
-        ;;
-    "status")
-        cmd_status
-        ;;
-    "hosts")
-        cmd_hosts
-        ;;
-    "reload")
-        cmd_sync
-        systemctl reload nginx
-        ;;
-    "log"|"logs")
-        cmd_log
-        ;;
-    "help"|"-h"|"--help")
-        show_help
-        ;;
-    *)
-        echo "Unknown command: $1"
-        show_help
-        exit 1
-        ;;
+case "${1:-}" in
+    ""|run|sync)    cmd_sync ;;
+    status)         cmd_status ;;
+    doctor|check)   cmd_doctor ;;
+    hosts)          cmd_hosts ;;
+    config)         cmd_config ;;
+    reload)         cmd_sync && { need_root reload; systemctl reload nginx && ui_ok "nginx reloaded"; } ;;
+    log|logs)       cmd_log ;;
+    version|-v|--version) echo "xui-sync ${VERSION}" ;;
+    help|-h|--help) show_help ;;
+    *)              ui_err "Unknown command: $1"; show_help; exit 1 ;;
 esac

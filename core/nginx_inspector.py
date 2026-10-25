@@ -18,23 +18,28 @@ import sqlite3
 import datetime
 from pathlib import Path
 
-RED = "\033[0;31m"
-GREEN = "\033[0;32m"
-BLUE = "\033[0;34m"
-YELLOW = "\033[1;33m"
-CYAN = "\033[0;36m"
-NC = "\033[0m"
+if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
+    RED = "\033[38;5;203m"
+    GREEN = "\033[38;5;84m"
+    BLUE = "\033[38;5;75m"
+    YELLOW = "\033[38;5;221m"
+    CYAN = "\033[38;5;51m"
+    NC = "\033[0m"
+else:
+    RED = GREEN = BLUE = YELLOW = CYAN = NC = ""
 
 def safe_input(prompt_text, default=""):
-    """Prompt user using standard input or fallback directly to /dev/tty."""
+    """Prompt using the controlling terminal; fall back to the default when none exists."""
     try:
         sys.stdout.write(prompt_text)
         sys.stdout.flush()
-        if os.path.exists("/dev/tty"):
+        try:
             with open("/dev/tty", "r") as tty:
                 val = tty.readline()
-        else:
-            val = sys.stdin.readline()
+        except OSError:
+            # No controlling terminal (CI / unattended): never block, use the default.
+            sys.stdout.write("\n")
+            return default
         val = val.strip() if val else ""
         return val if val else default
     except Exception:
@@ -339,14 +344,27 @@ def detect_integration(domain, servers, xui_data):
     }
 
 def backup_file(filepath, backup_dir):
-    """Safely back up a file."""
+    """Safely back up a file and clean up symlinks left dangling by the move."""
     os.makedirs(backup_dir, exist_ok=True)
     dst = os.path.join(backup_dir, os.path.basename(filepath))
     try:
         shutil.move(filepath, dst)
-        return dst
     except Exception:
         return None
+    remove_dangling_symlinks()
+    return dst
+
+def remove_dangling_symlinks():
+    """A sites-enabled symlink whose target was archived makes `nginx -t` fail."""
+    for d in ("/etc/nginx/sites-enabled", "/etc/nginx/conf.d"):
+        if not os.path.isdir(d):
+            continue
+        for entry in glob.glob(f"{d}/*"):
+            if os.path.islink(entry) and not os.path.exists(entry):
+                try:
+                    os.remove(entry)
+                except OSError:
+                    pass
 
 def get_listening_sockets():
     """Detect all ports actively bound on the operating system."""
@@ -383,9 +401,7 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir = f"/etc/nginx/backup_{timestamp}"
 
-    print(f"\n{CYAN}=========================================================={NC}")
-    print(f"{CYAN}       Nginx Pre-Configuration & Conflict Inspector       {NC}")
-    print(f"{CYAN}=========================================================={NC}")
+    print(f"\n{CYAN}══ Nginx pre-configuration & conflict inspector ═══════════{NC}")
 
     servers, found_files = scan_all_nginx_configs()
     xui_data = read_xui_database()
@@ -403,7 +419,8 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
     proxy_config["inbounds_port"] = inbounds_port
     proxy_config["panel_public_port"] = panel_port
     proxy_config["sub_public_port"] = sub_port
-    proxy_config["bot_public_port"] = bot_port
+    if bot_port > 0:  # 0 means "no bot": keep any previously configured bot port
+        proxy_config["bot_public_port"] = bot_port
 
     # 1. System Socket Level Port Check (Detect non-Nginx/non-XUI services on required ports)
     sockets = get_listening_sockets()
@@ -480,7 +497,7 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
             print(f"{GREEN}[+] Running in Update & Completion Mode.{NC}")
             proxy_config["skip_panel_proxy"] = bool(integration["panel_proxied"])
             proxy_config["skip_sub_proxy"] = bool(integration["sub_proxied"])
-            proxy_config["skip_bot_proxy"] = False
+            proxy_config["skip_bot_proxy"] = (bot_port <= 0)
             proxy_config["skip_inbound_ids"] = integration["routed_inbound_ids"]
 
             if integration["existing_root"]:
@@ -499,7 +516,7 @@ def inspect_and_resolve(domain, inbounds_port=443, panel_port=2083, sub_port=209
             proxy_config["root_location_rule"] = "return 444;"
             proxy_config["skip_panel_proxy"] = False
             proxy_config["skip_sub_proxy"] = False
-            proxy_config["skip_bot_proxy"] = False
+            proxy_config["skip_bot_proxy"] = (bot_port <= 0)
             proxy_config["skip_inbound_ids"] = []
             save_json(config_json_path, proxy_config)
             print(f"{GREEN}[+] Overwrite complete. Fresh gateway initialized.{NC}")

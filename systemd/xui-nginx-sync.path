@@ -3,7 +3,9 @@ Description=Watch 3X-UI Database For Inbound & Host Changes
 After=network.target
 
 [Path]
+# In WAL mode most writes land in the -wal file; the main file only changes on checkpoint.
 PathModified=/etc/x-ui/x-ui.db
+PathModified=/etc/x-ui/x-ui.db-wal
 Unit=xui-nginx-sync.service
 
 [Install]

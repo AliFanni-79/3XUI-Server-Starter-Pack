@@ -5,3 +5,4 @@ After=network.target x-ui.service
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 /usr/local/bin/xui-nginx-sync.py
+Nice=10
